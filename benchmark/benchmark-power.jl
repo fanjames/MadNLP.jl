@@ -45,12 +45,17 @@ else
 end
 
 
-@everywhere function evalmodel(prob,solver)
+@everywhere function evalmodel(prob,solver;gcoff=false)
     println("Solving $prob")
-    t = @elapsed begin
-        retval = solver(prob)
+    gcoff && GC.enable(false);
+    mem = @allocated begin
+        t = @elapsed begin
+            retval = solver(prob)
+        end
     end
+    gcoff && GC.enable(true);
     retval["solve_time"] = t
+    retval["mem"] = mem
     return retval
 end
 
@@ -62,22 +67,29 @@ function benchmark(solver,probs;warm_up_probs = [])
     fs= [fetch.(r) for r in rs]
 
     println("Solving problems")
-    retvals = pmap(prob->evalmodel(prob,solver),probs)
+    retvals = pmap(prob->evalmodel(prob,solver;gcoff=GCOFF),probs)
     time   = [retval["solve_time"] for retval in retvals]
     status = [get_status(retval["termination_status"]) for retval in retvals]
-    time,status
+    mem    = [retval["mem"] for retval in retvals]
+    time,status,mem
 end
 
-cases = filter!(e->occursin("pglib_opf_case",e),readdir(PGLIB_PATH))
-types = [ACPPowerModel, ACRPowerModel, ACTPowerModel,
-         DCPPowerModel, DCMPPowerModel, NFAPowerModel,
-         DCPLLPowerModel,LPACCPowerModel, SOCWRPowerModel,
-         QCRMPowerModel,QCLSPowerModel]
+if QUICK
+    cases = filter!(e->(occursin("pglib_opf_case",e) && occursin("pegase",e)),readdir(PGLIB_PATH))
+    types = [ACPPowerModel, ACRPowerModel]
+else
+    cases = filter!(e->occursin("pglib_opf_case",e),readdir(PGLIB_PATH))
+    types = [ACPPowerModel, ACRPowerModel, ACTPowerModel,
+             DCPPowerModel, DCMPPowerModel, NFAPowerModel,
+             DCPLLPowerModel,LPACCPowerModel, SOCWRPowerModel,
+             QCRMPowerModel,QCLSPowerModel]
+end
 probs = [(case,type) for case in cases for type in types]
 name =  ["$case-$type" for case in cases for type in types]
 
-time,status = benchmark(solver,probs;warm_up_probs = [("pglib_opf_case1888_rte.m", ACPPowerModel)])
+time,status,mem = benchmark(solver,probs;warm_up_probs = [("pglib_opf_case1888_rte.m", ACPPowerModel)])
 
 writedlm("name-power.csv",name,',')
 writedlm("time-power-$(SOLVER).csv",time)
 writedlm("status-power-$(SOLVER).csv",status)
+writedlm("mem-power-$(SOLVER).csv",mem)
