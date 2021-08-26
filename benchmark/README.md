@@ -1,9 +1,9 @@
-Running benchmark requires pacakge ArgParse. First install ArgParse with:
+To compare the current branch with the master using cutest, powermodels data set, run:
 ```
-julia -e 'import Pkg; Pkg.add("ArgParse")'
+julia runbenchmarks.jl cutest,power current,master -p 4
 ```
 
-To get a help for running benchmark, run:
+Users can specify various options for running the benchmark. To get a help for running benchmark, run:
 ```
 julia runbenchmark.jl --help
 ```
