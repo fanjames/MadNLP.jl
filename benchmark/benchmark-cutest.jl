@@ -36,12 +36,19 @@ end
 @everywhere function evalmodel(name,solver)
     println("Solving $name")
     nlp = CUTEstModel(name; decode=false)
-    t = @elapsed begin
-        retval = solver(nlp)
+    try
+        GC.enable(false);
+        t = @elapsed begin
+            retval = solver(nlp)
+        end
+        GC.enable(true);
+        retval.elapsed_time = t
+        finalize(nlp)
+        return retval
+    catch e
+        finalize(nlp)
+        throw(e)
     end
-    retval.elapsed_time = t
-    finalize(nlp)
-    return retval
 end
 
 function benchmark(solver,probs;warm_up_probs = [])
