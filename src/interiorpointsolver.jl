@@ -5,6 +5,7 @@
     k::Int = 0 # total iteration counter
     l::Int = 0 # backtracking line search counter
     t::Int = 0 # restoration phase counter
+    r::Int = 0 # number of successive full step rejection
 
     start_time::Float64
 
@@ -651,6 +652,8 @@ function regular!(ips::AbstractInteriorPointSolver)
         fixed_variable_treatment_vec!(ips.jacl,ips.ind_fixed)
         fixed_variable_treatment_z!(ips.zl,ips.zu,ips.f,ips.jacl,ips.ind_fixed)
 
+        # max(s_max,(norm(l,1)+norm(zl_r,1)+norm(zu_r,1)) / max(1,(length(l)+length(zl_r)+length(zu_r))))/s_max
+        
         sd = get_sd(ips.l,ips.zl_r,ips.zu_r,ips.opt.s_max)
         sc = get_sc(ips.zl_r,ips.zu_r,ips.opt.s_max)
 
@@ -721,8 +724,8 @@ function regular!(ips::AbstractInteriorPointSolver)
         ips.cnt.l = 1
         ips.alpha = alpha_max
         varphi_trial= 0.
-            theta_trial = 0.
-            small_search_norm = get_rel_search_norm(ips.x,ips.dx) < 10*eps(Float64)
+        theta_trial = 0.
+        small_search_norm = get_rel_search_norm(ips.x,ips.dx) < 10*eps(Float64)
         switching_condition = is_switching(varphi_d,ips.alpha,ips.opt.s_phi,ips.opt.delta,2.,ips.opt.s_theta)
         armijo_condition = false
         while true
@@ -741,10 +744,26 @@ function regular!(ips::AbstractInteriorPointSolver)
             ips.ftype = get_ftype(
                 ips.filter,theta,theta_trial,varphi,varphi_trial,switching_condition,armijo_condition,
                 ips.theta_min,ips.opt.obj_max_inc,ips.opt.gamma_theta,ips.opt.gamma_phi)
-            ips.ftype in ["f","h"] && (@trace(ips.logger,"Step accepted with type $(ips.ftype)"); break)
-
-            ips.cnt.l==1 && theta_trial>=theta && second_order_correction(
-                ips,alpha_max,theta,varphi,theta_trial,varphi_d,switching_condition) && break
+            
+            if ips.ftype in ["f","h"] ||
+                (ips.cnt.l==1 && theta_trial>=theta &&
+                second_order_correction(
+                    ips,alpha_max,theta,varphi,theta_trial,varphi_d,switching_condition))
+                
+                @trace(ips.logger,"Step accepted with type $(ips.ftype)")
+                break
+            # elseif ips.cnt.r >= ips.opt.filter_reset_trigger
+            #     # prevent filter reset
+            #     switching_condition = true 
+            #     armijo_condition = true
+            #     if ips.theta_max > theta_trial / 10
+            #         ips.theta_max /= 10
+            #         ips.filter = [(ips.theta_max,-Inf)]
+            #         break
+            #     # else
+            #     #     break
+            #     end
+            end
 
             ips.alpha /= 2
             ips.cnt.l += 1
@@ -759,6 +778,8 @@ function regular!(ips::AbstractInteriorPointSolver)
                     SOLVED_TO_ACCEPTABLE_LEVEL : SEARCH_DIRECTION_BECOMES_TOO_SMALL
             end
         end
+
+        ips.cnt.l == 1 ? (ips.cnt.r = 0) : (ips.cnt.r += 1)
 
         @trace(ips.logger,"Updating primal-dual variables.")
         ips.x.=ips.x_trial
@@ -828,9 +849,9 @@ function robust!(ips::Solver)
                             ips.opt.mu_linear_decrease_factor,ips.opt.mu_superlinear_decrease_power,ips.opt.tol)
             inf_compl_mu_R = get_inf_compl_R(
                 ips.x_lr,ips.xl_r,ips.zl_r,ips.xu_r,ips.x_ur,ips.zu_r,RR.pp,RR.zp,RR.nn,RR.zn,RR.mu_R,sc)
-            RR.tau_R= max(ips.opt.tau_min,1-RR.mu_R)
-            RR.zeta = sqrt(RR.mu_R)
             RR.mu_R = mu_new
+            RR.zeta = sqrt(RR.mu_R)
+            RR.tau_R= max(ips.opt.tau_min,1-RR.mu_R)
 
             empty!(RR.filter)
             push!(RR.filter,(ips.theta_max,-Inf))
@@ -934,18 +955,38 @@ function robust!(ips::Solver)
         # check if going back to regular phase
         @trace(ips.logger,"Checking if going back to regular phase.")
         ips.obj_val = eval_f_wrapper(ips, ips.x)
-        eval_grad_f_wrapper!(ips, ips.f, ips.x)
         theta = get_theta(ips.c)
         varphi= get_varphi(ips.obj_val,ips.x_lr,ips.xl_r,ips.xu_r,ips.x_ur,ips.mu)
 
+        # adjusting slack 52
+        # if ips.cnt.t >= 5 ###### 13-16? 19 20 27 34 41 46 54 55 56 
+        #     # empty!(RR.filter)
+        #     # push!(RR.filter,(ips.theta_max,-Inf))
+        #     # return REGULAR
+        #     theta <= ips.opt.required_infeasibility_reduction * RR.theta_ref
 
-        if !is_filter_acceptable(ips.RR.filter,theta,varphi) &&
-            theta <= ips.opt.required_infeasibility_reduction * RR.theta_ref
+        #     @trace(ips.logger,"Going back to the regular phase.")
+        #     ips.zl_r.=1
+        #     ips.zu_r.=1
+
+        #     set_initial_rhs!(ips, ips.kkt)
+        #     initialize!(ips.kkt)
+
+        #     factorize_wrapper!(ips)
+        #     solve_refine_wrapper!(ips,ips.d,ips.p)
+        #     norm(ips.dl,Inf)>ips.opt.constr_mult_init_max ? (ips.l.= 0) : (ips.l.= ips.dl)
+        #     ips.cnt.k+=1
+
+        #     return REGULAR
+
+        # end
+        if !is_filter_acceptable(ips.filter,theta,varphi) && theta <= ips.opt.required_infeasibility_reduction * RR.theta_ref
 
             @trace(ips.logger,"Going back to the regular phase.")
             ips.zl_r.=1
             ips.zu_r.=1
 
+            eval_grad_f_wrapper!(ips, ips.f, ips.x)
             set_initial_rhs!(ips, ips.kkt)
             initialize!(ips.kkt)
 
@@ -1078,7 +1119,7 @@ function second_order_correction(ips::AbstractInteriorPointSolver,alpha_max::Flo
         theta_soc = get_theta(ips.c_trial)
         varphi_soc= get_varphi(ips.obj_val_trial,ips.x_trial_lr,ips.xl_r,ips.xu_r,ips.x_trial_ur,ips.mu)
 
-        is_filter_acceptable(ips.filter,theta_soc,varphi_soc) && break
+        !is_filter_acceptable(ips.filter,theta_soc,varphi_soc) && break
 
         if theta <=ips.theta_min && switching_condition
             # Case I

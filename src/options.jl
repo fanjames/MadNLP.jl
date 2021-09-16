@@ -85,7 +85,8 @@ end
     kappa_sigma::Float64 = 1e10
     barrier_tol_factor::Float64 = 10.
     rho::Float64 = 1000.
-
+    filter_reset_trigger::Int = 5
+    
     # Barrier
     mu_init::Float64 = 1e-1
     mu_min::Float64 = 1e-11
