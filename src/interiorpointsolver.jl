@@ -753,17 +753,17 @@ function regular!(ips::AbstractInteriorPointSolver)
                 
                 @trace(ips.logger,"Step accepted with type $(ips.ftype)")
                 break
-            # elseif ips.cnt.r >= ips.opt.filter_reset_trigger
-            #     # prevent filter reset
-            #     switching_condition = true 
-            #     armijo_condition = true
-            #     if ips.theta_max > theta_trial / 10
-            #         ips.theta_max /= 10
-            #         ips.filter = [(ips.theta_max,-Inf)]
-            #         break
-            #     # else
-            #     #     break
-            #     end
+            elseif ips.cnt.r >= ips.opt.filter_reset_trigger
+                # prevent filter reset
+                switching_condition = true 
+                armijo_condition = true
+                if ips.theta_max > theta_trial / 10
+                    ips.theta_max /= 10
+                    ips.filter = [(ips.theta_max,-Inf)]
+                    break
+                # else
+                #     break
+                end
             end
 
             ips.alpha /= 2
