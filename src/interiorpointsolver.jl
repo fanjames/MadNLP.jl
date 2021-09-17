@@ -368,6 +368,8 @@ function eval_lag_hess_wrapper!(ipp::Solver, kkt::DenseKKTSystem, x::Vector{Floa
 end
 
 function Solver(nlp::AbstractNLPModel;
+                zl0 = zeros(get_nvar(nlp)),
+                zu0 = zeros(get_nvar(nlp)),
                 option_dict::Dict{Symbol,Any}=Dict{Symbol,Any}(),
                 kwargs...)
 
@@ -409,8 +411,8 @@ function Solver(nlp::AbstractNLPModel;
     xu = [get_uvar(nlp);view(get_ucon(nlp),ind_cons.ind_ineq)]
     x = [get_x0(nlp);zeros(ns)]
     l = copy(get_y0(nlp))
-    zl= zeros(get_nvar(nlp)+ns)
-    zu= zeros(get_nvar(nlp)+ns)
+    zl= [zl0; zeros(ns)]
+    zu= [zu0; zeros(ns)]
 
     f = zeros(n) # not sure why, but seems necessary to initialize to 0 when used with Plasmo interface
     c = zeros(m)
@@ -542,8 +544,8 @@ function initialize!(ips::AbstractInteriorPointSolver)
     if ips.opt.nlp_scaling
         ips.obj_scale[] = min(1,ips.opt.nlp_scaling_max_gradient/norm(ips.f,Inf))
         ips.f.*=ips.obj_scale[]
-        ips.zl.*=ips.obj_scale[]
-        ips.zu.*=ips.obj_scale[]
+        # ips.zl.*=ips.obj_scale[]
+        # ips.zu.*=ips.obj_scale[]
     end
 
     # Initialize dual variables
