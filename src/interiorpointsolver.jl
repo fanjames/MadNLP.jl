@@ -5,6 +5,7 @@
     k::Int = 0 # total iteration counter
     l::Int = 0 # backtracking line search counter
     t::Int = 0 # restoration phase counter
+    r::Int = 0 
 
     start_time::Float64
 
@@ -740,7 +741,25 @@ function regular!(ips::AbstractInteriorPointSolver)
                 ips.filter,theta,theta_trial,varphi,varphi_trial,switching_condition,armijo_condition,
                 ips.theta_min,ips.opt.obj_max_inc,ips.opt.gamma_theta,ips.opt.gamma_phi,
                 has_constraints(ips))
-            ips.ftype in ["f","h"] && (@trace(ips.logger,"Step accepted with type $(ips.ftype)"); break)
+            if ips.ftype in ["f","h"] ||
+                (ips.cnt.l==1 && theta_trial>=theta &&
+                second_order_correction(
+                    ips,alpha_max,theta,varphi,theta_trial,varphi_d,switching_condition))
+                
+                @trace(ips.logger,"Step accepted with type $(ips.ftype)")
+                break
+            elseif ips.cnt.r >= ips.opt.filter_reset_trigger
+                # prevent filter reset
+                switching_condition = true 
+                armijo_condition = true
+                if ips.theta_max > theta_trial / 10
+                    ips.theta_max /= 10
+                    ips.filter = [(ips.theta_max,-Inf)]
+                    break
+                # else
+                #     break
+                end
+            end
 
             ips.cnt.l==1 && theta_trial>=theta && second_order_correction(
                 ips,alpha_max,theta,varphi,theta_trial,varphi_d,switching_condition) && break
@@ -759,6 +778,8 @@ function regular!(ips::AbstractInteriorPointSolver)
                     SOLVED_TO_ACCEPTABLE_LEVEL : SEARCH_DIRECTION_BECOMES_TOO_SMALL
             end
         end
+        
+        ips.cnt.l == 1 ? (ips.cnt.r = 0) : (ips.cnt.r += 1)
 
         @trace(ips.logger,"Updating primal-dual variables.")
         ips.x.=ips.x_trial
