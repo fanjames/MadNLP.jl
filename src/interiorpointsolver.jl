@@ -368,8 +368,6 @@ function eval_lag_hess_wrapper!(ipp::Solver, kkt::DenseKKTSystem, x::Vector{Floa
 end
 
 function Solver(nlp::AbstractNLPModel;
-                zl0 = zeros(get_nvar(nlp)),
-                zu0 = zeros(get_nvar(nlp)),
                 option_dict::Dict{Symbol,Any}=Dict{Symbol,Any}(),
                 kwargs...)
 
@@ -411,8 +409,8 @@ function Solver(nlp::AbstractNLPModel;
     xu = [get_uvar(nlp);view(get_ucon(nlp),ind_cons.ind_ineq)]
     x = [get_x0(nlp);zeros(ns)]
     l = copy(get_y0(nlp))
-    zl= [zl0; zeros(ns)]
-    zu= [zu0; zeros(ns)]
+    zl= zeros(get_nvar(nlp)+ns)
+    zu= zeros(get_nvar(nlp)+ns)
 
     f = zeros(n) # not sure why, but seems necessary to initialize to 0 when used with Plasmo interface
     c = zeros(m)
@@ -676,11 +674,10 @@ function regular!(ips::AbstractInteriorPointSolver)
         @trace(ips.logger,"Updating the barrier parameter.")
         while ips.mu != max(ips.opt.mu_min,ips.opt.tol/10) &&
             max(ips.inf_pr,ips.inf_du,inf_compl_mu) <= ips.opt.barrier_tol_factor*ips.mu
-            mu_new = get_mu(ips.mu,ips.opt.mu_min,
+            ips.mu = get_mu(ips.mu,ips.opt.mu_min,
                             ips.opt.mu_linear_decrease_factor,ips.opt.mu_superlinear_decrease_power,ips.opt.tol)
             inf_compl_mu = get_inf_compl(ips.x_lr,ips.xl_r,ips.zl_r,ips.xu_r,ips.x_ur,ips.zu_r,ips.mu,sc)
             ips.tau= get_tau(ips.mu,ips.opt.tau_min)
-            ips.mu = mu_new
             empty!(ips.filter)
             push!(ips.filter,(ips.theta_max,-Inf))
         end
@@ -856,8 +853,14 @@ function restore!(ips::AbstractInteriorPointSolver)
         set_aug_rhs!(ips, ips.kkt, ips.c)
 
         dual_inf_perturbation!(ips.px,ips.ind_llb,ips.ind_uub,ips.mu,ips.opt.kappa_d)
-        factorize_wrapper!(ips)
-        solve_refine_wrapper!(ips,ips.d,ips.p)
+        # factorize_wrapper!(ips)
+        # solve_refine_wrapper!(ips,ips.d,ips.p)
+        if ips.opt.inertia_correction_method == INERTIA_FREE
+            inertia_free_reg(ips) || return ROBUST
+        elseif ips.opt.inertia_correction_method == INERTIA_BASED
+            inertia_based_reg(ips) || return ROBUST
+        end
+        
         finish_aug_solve!(ips, ips.kkt, ips.mu)
         
         ips.ftype = "f"
@@ -922,8 +925,13 @@ function robust!(ips::Solver)
 
         # without inertia correction,
         @trace(ips.logger,"Solving restoration phase primal-dual system.")
-        factorize_wrapper!(ips)        
-        solve_refine_wrapper!(ips,ips.d,ips.p)
+        # factorize_wrapper!(ips)        
+        # solve_refine_wrapper!(ips,ips.d,ips.p)
+        if ips.opt.inertia_correction_method == INERTIA_FREE
+            inertia_free_reg(ips) || return ROBUST
+        elseif ips.opt.inertia_correction_method == INERTIA_BASED
+            inertia_based_reg(ips) || return ROBUST
+        end
 
         finish_aug_solve!(ips, ips.kkt, RR.mu_R)
         finish_aug_solve_RR!(RR.dpp,RR.dnn,RR.dzp,RR.dzn,ips.l,ips.dl,RR.pp,RR.nn,RR.zp,RR.zn,RR.mu_R,ips.opt.rho)
@@ -1032,8 +1040,14 @@ function robust!(ips::Solver)
             set_initial_rhs!(ips, ips.kkt)
             initialize!(ips.kkt)
 
-            factorize_wrapper!(ips)
-            solve_refine_wrapper!(ips,ips.d,ips.p)
+            # factorize_wrapper!(ips)
+            # solve_refine_wrapper!(ips,ips.d,ips.p)
+            if ips.opt.inertia_correction_method == INERTIA_FREE
+                inertia_free_reg(ips) || return ROBUST
+            elseif ips.opt.inertia_correction_method == INERTIA_BASED
+                inertia_based_reg(ips) || return ROBUST
+            end
+
             norm(ips.dl,Inf)>ips.opt.constr_mult_init_max ? (ips.l.= 0) : (ips.l.= ips.dl)
             ips.cnt.k+=1
 
