@@ -518,12 +518,13 @@ function initialize!(ips::AbstractInteriorPointSolver)
 
     # Initialization
     @trace(ips.logger,"Initializing primal and bound duals.")
-    ips.zl_r.=1.0
-    ips.zu_r.=1.0
-    ips.xl_r.-= max.(1,abs.(ips.xl_r)).*ips.opt.tol
-    ips.xu_r.+= max.(1,abs.(ips.xu_r)).*ips.opt.tol
+    println(min(minimum(abs.(ips.x_lr.-ips.xl_r)),minimum(abs.(ips.xu_r.-ips.x_ur))))
+    ips.xl_r.-= max.(1,abs.(ips.xl_r)).*(ips.opt.tol)
+    ips.xu_r.+= max.(1,abs.(ips.xu_r)).*(ips.opt.tol)
+    ips.zl_r.=1
+    ips.zu_r.=1
     initialize_variables!(ips.x,ips.xl,ips.xu,ips.opt.bound_push,ips.opt.bound_fac)
-
+    
     # Automatic scaling (constraints)
     @trace(ips.logger,"Computing constraint scaling.")
     eval_jac_wrapper!(ips, ips.kkt, ips.x)
@@ -542,6 +543,10 @@ function initialize!(ips::AbstractInteriorPointSolver)
     if ips.opt.nlp_scaling
         ips.obj_scale[] = min(1,ips.opt.nlp_scaling_max_gradient/norm(ips.f,Inf))
         ips.f.*=ips.obj_scale[]
+        ips.zl_r .*=ips.obj_scale[]
+        ips.zu_r .*=ips.obj_scale[]
+        # ips.zl_r./=scale_l
+        # ips.zu_r./=scale_u
     end
 
     # Initialize dual variables
@@ -551,7 +556,12 @@ function initialize!(ips::AbstractInteriorPointSolver)
         initialize!(ips.kkt)
         factorize_wrapper!(ips)
         solve_refine_wrapper!(ips,ips.d,ips.p)
-        norm(ips.dl,Inf)>ips.opt.constr_mult_init_max ? (ips.l.= 0.) : (ips.l.= ips.dl)
+        finish_aug_solve!(ips, ips.kkt, 0.)
+        if norm(ips.dl,Inf)>ips.opt.constr_mult_init_max
+            ips.l.= 0.
+        else
+            ips.l.= ips.dl
+        end
     end
 
     # Initializing
@@ -643,6 +653,8 @@ end
 
 function regular!(ips::AbstractInteriorPointSolver)
     while true
+
+        
         if (ips.cnt.k!=0 && !ips.opt.jacobian_constant)
             eval_jac_wrapper!(ips, ips.kkt, ips.x)
         end
@@ -674,11 +686,10 @@ function regular!(ips::AbstractInteriorPointSolver)
         @trace(ips.logger,"Updating the barrier parameter.")
         while ips.mu != max(ips.opt.mu_min,ips.opt.tol/10) &&
             max(ips.inf_pr,ips.inf_du,inf_compl_mu) <= ips.opt.barrier_tol_factor*ips.mu
-            mu_new = get_mu(ips.mu,ips.opt.mu_min,
+            ips.mu = get_mu(ips.mu,ips.opt.mu_min,
                             ips.opt.mu_linear_decrease_factor,ips.opt.mu_superlinear_decrease_power,ips.opt.tol)
             inf_compl_mu = get_inf_compl(ips.x_lr,ips.xl_r,ips.zl_r,ips.xu_r,ips.x_ur,ips.zu_r,ips.mu,sc)
             ips.tau= get_tau(ips.mu,ips.opt.tau_min)
-            ips.mu = mu_new
             empty!(ips.filter)
             push!(ips.filter,(ips.theta_max,-Inf))
         end
@@ -775,6 +786,13 @@ function regular!(ips::AbstractInteriorPointSolver)
         axpy!(ips.alpha_z,ips.dzu,ips.zu_r)
         reset_bound_dual!(ips.zl,ips.x,ips.xl,ips.mu,ips.opt.kappa_sigma)
         reset_bound_dual!(ips.zu,ips.xu,ips.x,ips.mu,ips.opt.kappa_sigma)
+
+
+        # ips.obj_scale[] = min(1,ips.opt.nlp_scaling_max_gradient/norm(ips.f,Inf))
+        # ips.f.*=ips.obj_scale[]
+        # ips.zl_r.*=ips.obj_scale[]
+        # ips.zu_r.*=ips.obj_scale[]
+
         eval_grad_f_wrapper!(ips, ips.f,ips.x)
 
         if !switching_condition || !armijo_condition
