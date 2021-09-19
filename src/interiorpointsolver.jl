@@ -1000,7 +1000,22 @@ function robust!(ips::Solver)
                 switching_condition,armijo_condition,
                 ips.theta_min,ips.opt.obj_max_inc,ips.opt.gamma_theta,ips.opt.gamma_phi,
                 has_constraints(ips))
-            ips.ftype in ["f","h"] && (@trace(ips.logger,"Step accepted with type $(ips.ftype)"); break)
+            # ips.ftype in ["f","h"] && (@trace(ips.logger,"Step accepted with type $(ips.ftype)"); break)
+            if ips.ftype in ["f","h"]
+                @trace(ips.logger,"Step accepted with type $(ips.ftype)")
+                break
+            elseif ips.cnt.r >= ips.opt.filter_reset_trigger
+                # prevent filter reset
+                switching_condition = true 
+                armijo_condition = true
+                if ips.theta_max > theta_R_trial / 10
+                    ips.theta_max /= 10
+                    ips.filter = [(ips.theta_max,-Inf)]
+                    break
+                # else
+                #     break
+                end
+            end
 
             ips.alpha /= 2
             ips.cnt.l += 1
@@ -1015,6 +1030,8 @@ function robust!(ips::Solver)
             end
         end
 
+        ips.cnt.l == 1 ? (ips.cnt.r = 0) : (ips.cnt.r += 1)
+            
         @trace(ips.logger,"Updating primal-dual variables.")
         ips.x.=ips.x_trial
         ips.c.=ips.c_trial
@@ -1107,7 +1124,9 @@ function inertia_based_reg(ips::AbstractInteriorPointSolver)
         end
         ips.del_c = (num_zero == 0 || !solve_status) ?
             ips.opt.jacobian_regularization_value * ips.mu^(ips.opt.jacobian_regularization_exponent) : 0.
-        regularize_diagonal!(ips.kkt, ips.del_w - del_w_prev, ips.del_c)
+            regularize_diagonal!(
+                ips.kkt, ips.del_w - del_w_prev,
+                ips.status == ROBUST ? 2*(-ips.del_w + del_w_prev) + ips.del_c : ips.del_c)
         del_w_prev = ips.del_w
 
         factorize_wrapper!(ips)
