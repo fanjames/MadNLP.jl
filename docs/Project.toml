@@ -1,0 +1,11 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
+MadNLP = "2621e9c9-9eb4-46b1-8089-e8c72242dfb6"
+MadNLPGPU = "d72a61cc-809d-412f-99be-fd81f4b8a598"
+MadNLPGraph = "2f590f30-ea46-438a-a78d-e5bfe3109704"
+MadNLPHSL = "7fb6135f-58fe-4112-84ca-653cf5be0c77"
+MadNLPKrylov = "1888cb03-ce40-4a36-8d45-ae8231a0e17c"
+MadNLPMumps = "3b83494e-c0a4-4895-918b-9157a7a085a1"
+MadNLPPardiso = "312ee924-cb12-49df-b284-7304c3902fc0"
+MadNLPTest = "b52a2a03-04ab-4a5f-9698-6a2deff93217"
