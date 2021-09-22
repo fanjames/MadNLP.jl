@@ -657,7 +657,7 @@ function regular!(ips::AbstractInteriorPointSolver)
         ips.inf_du = get_inf_du(ips.f,ips.zl,ips.zu,ips.jacl,sd)
         ips.inf_compl = get_inf_compl(ips.x_lr,ips.xl_r,ips.zl_r,ips.xu_r,ips.x_ur,ips.zu_r,0.,sc)
         inf_compl_mu = get_inf_compl(ips.x_lr,ips.xl_r,ips.zl_r,ips.xu_r,ips.x_ur,ips.zu_r,ips.mu,sc)
-
+        
         print_iter(ips)
 
         # evaluate termination criteria
@@ -754,7 +754,7 @@ function regular!(ips::AbstractInteriorPointSolver)
                 return RESTORE
             else
                 @trace(ips.logger,"Step rejected; proceed with the next trial step.")
-                ips.alpha * norm(ips.dx) < eps(Float64)*10 &&
+                ips.alpha * max(1, norm(ips.dx)) < eps(Float64)*10 &&
                     return ips.cnt.acceptable_cnt >0 ?
                     SOLVED_TO_ACCEPTABLE_LEVEL : SEARCH_DIRECTION_BECOMES_TOO_SMALL
             end
@@ -982,7 +982,7 @@ function robust!(ips::Solver)
                 return RESTORATION_FAILED
             else
                 @trace(ips.logger,"Step rejected; proceed with the next trial step.")
-                ips.alpha < eps(Float64)*10 && return ips.cnt.acceptable_cnt >0 ?
+                ips.alpha * max(1, norm(ips.dx)) < eps(Float64)*10 && return ips.cnt.acceptable_cnt >0 ?
                     SOLVED_TO_ACCEPTABLE_LEVEL : SEARCH_DIRECTION_BECOMES_TOO_SMALL
             end
         end
@@ -1466,20 +1466,20 @@ end
 function get_F(c,f,zl,zu,jacl,x_lr,xl_r,zl_r,xu_r,x_ur,zu_r,mu)
     F = 0.
     for i=1:length(c)
-        @inbounds F = max(F,c[i])
+        @inbounds F = max(F,abs(c[i]))
     end
     for i=1:length(f)
-        @inbounds F = max(F,f[i]-zl[i]+zu[i]+jacl[i])
+        @inbounds F = max(F,abs(f[i]-zl[i]+zu[i]+jacl[i]))
     end
     for i=1:length(x_lr)
-        x_lr[i] >= xl_r[i] || return Inf
-        zl_r[i] >= 0       || return Inf
-        @inbounds F = max(F,(x_lr[i]-xl_r[i])*zl_r[i]-mu)
+        @inbounds x_lr[i] >= xl_r[i] || return Inf
+        @inbounds zl_r[i] >= 0       || return Inf
+        @inbounds F = max(F,abs((x_lr[i]-xl_r[i])*zl_r[i]-mu))
     end
     for i=1:length(x_ur)
-        xu_r[i] >= x_ur[i] || return Inf
-        zu_r[i] >= 0       || return Inf
-        @inbounds F = max(F,(xu_r[i]-xu_r[i])*zu_r[i]-mu)
+        @inbounds xu_r[i] >= x_ur[i] || return Inf
+        @inbounds zu_r[i] >= 0       || return Inf
+        @inbounds F = max(F,abs((xu_r[i]-xu_r[i])*zu_r[i]-mu))
     end
     return F
 end
