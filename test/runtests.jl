@@ -1,6 +1,6 @@
-using Test, MadNLP, MadNLPTests, MINLPTests
+using Test, MadNLP, MadNLPTests #, MINLPTests
 import MathOptInterface
-import AmplNLReader: AmplModel
+# import AmplNLReader: AmplModel
 import SparseArrays: sparse
 
 @testset "MadNLP test" begin
@@ -22,7 +22,8 @@ import SparseArrays: sparse
         include("madnlp_dense.jl")
     end
 
-    @testset "MINLP test" begin
-        include("minlp_test.jl")
-    end
+    # this is temporarily commented out: MINLPTests does not support JuMP 0.22 yet
+    # @testset "MINLP test" begin
+    #     include("minlp_test.jl")
+    # end
 end # @testset
