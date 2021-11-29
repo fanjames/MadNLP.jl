@@ -326,10 +326,11 @@ function eval_lag_hess_wrapper!(ipp::InteriorPointSolver, kkt::AbstractKKTSystem
     nlp = ipp.nlp
     cnt = ipp.cnt
     @trace(ipp.logger,"Evaluating Lagrangian Hessian.")
+    nvar = get_nvar(nlp)::Int
     ipp._w1l .= l.*ipp.con_scale
     hess = get_hessian(kkt)
     cnt.eval_function_time += @elapsed hess_coord!(
-        nlp, view(x,1:get_nvar(nlp)), ipp._w1l, hess;
+        nlp, view(x,1:nvar), ipp._w1l, hess;
         obj_weight = (get_minimize(nlp) ? 1. : -1.) * (is_resto ? 0.0 : ipp.obj_scale[]))
     compress_hessian!(kkt)
     cnt.lag_hess_cnt+=1
@@ -490,7 +491,7 @@ function InteriorPointSolver{KKTSystem}(nlp::AbstractNLPModel, opt::Options;
 
     @trace(logger,"Initializing iterative solver.")
     iterator = opt.iterator.Solver(
-        similar(d),
+        similar(d, size(get_kkt(kkt), 1)),
         (b, x)->mul!(b, kkt, x), (x)->solve!(linear_solver, x) ; option_dict=option_linear_solver)
 
     @trace(logger,"Initializing fixed variable treatment scheme.")
@@ -531,25 +532,23 @@ function initialize!(ips::AbstractInteriorPointSolver)
     ips.xu_r.+= max.(1,abs.(ips.xu_r)).*ips.opt.tol
     initialize_variables!(ips.x,ips.xl,ips.xu,ips.opt.bound_push,ips.opt.bound_fac)
 
-    # Automatic scaling (constraints)
-    @trace(ips.logger,"Computing constraint scaling.")
+    # Automatic scaling
+    eval_grad_f_wrapper!(ips, ips.f,ips.x)
     eval_jac_wrapper!(ips, ips.kkt, ips.x)
     compress_jacobian!(ips.kkt)
-    if (ips.m > 0) && ips.opt.nlp_scaling
-        jac = get_raw_jacobian(ips.kkt)
-        set_con_scale!(ips.con_scale, jac, ips.opt.nlp_scaling_max_gradient)
-        set_jacobian_scaling!(ips.kkt, ips.con_scale)
-        ips.l./=ips.con_scale
-    end
-    compress_jacobian!(ips.kkt)
-
-    # Automatic scaling (objective)
-    eval_grad_f_wrapper!(ips, ips.f,ips.x)
-    @trace(ips.logger,"Computing objective scaling.")
+    scaler = MaxScaler(ips.f, get_raw_jacobian(ips.kkt), ips.opt.nlp_scaling_max_gradient)
     if ips.opt.nlp_scaling
-        ips.obj_scale[] = min(1,ips.opt.nlp_scaling_max_gradient/norm(ips.f,Inf))
+        @trace(ips.logger,"Computing constraint scaling.")
+        if ips.m > 0
+            set_constraints_scaling!(ips.con_scale, ips.nlp, scaler)
+            set_jacobian_scaling!(ips.kkt, ips.con_scale)
+            ips.l./=ips.con_scale
+        end
+        @trace(ips.logger,"Computing objective scaling.")
+        ips.obj_scale[] = get_objective_scaling(ips.nlp, scaler)
         ips.f.*=ips.obj_scale[]
     end
+    compress_jacobian!(ips.kkt)
 
     # Initialize dual variables
     @trace(ips.logger,"Initializing constraint duals.")
