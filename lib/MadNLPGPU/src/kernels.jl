@@ -101,7 +101,7 @@ function MadNLP.set_aug_diagonal!(kkt::MadNLP.DenseKKTSystem{T, VT, MT}, ips::Ma
 end
 
 @kernel function _build_dense_kkt_system_kernel!(
-    dest, hess, jac, pr_diag, du_diag, diag_hess, n, m, ns
+    dest, hess, jac, pr_diag, du_diag, diag_hess, ind_ineq, con_scale, n, m, ns
 )
     i, j = @index(Global, NTuple)
     if (i <= n)
@@ -115,8 +115,13 @@ end
     elseif i <= n + ns
         # Transfer slack diagonal
         dest[i, i] = pr_diag[i]
+        # Transfer Jacobian wrt slack
+        j = i - ns
+        is = ind_ineq[j]
+        dest[is + n + ns, j + n] = - con_scale[is]
+        dest[j + n, is + n + ns] = - con_scale[is]
     elseif i <= n + ns + m
-        # Transfer Jacobian
+        # Transfer Jacobian wrt variable x
         i_ = i - n - ns
         dest[i, j] = jac[i_, j]
         dest[j, i] = jac[i_, j]
@@ -127,10 +132,13 @@ end
 
 function MadNLP._build_dense_kkt_system!(
     dest::CuMatrix, hess::CuMatrix, jac::CuMatrix,
-    pr_diag::CuVector, du_diag::CuVector, diag_hess::CuVector, n, m, ns
+    pr_diag::CuVector, du_diag::CuVector, diag_hess::CuVector, ind_ineq, con_scale, n, m, ns
 )
     ndrange = (n+m+ns, n+ns)
-    ev = _build_dense_kkt_system_kernel!(CUDADevice())(dest, hess, jac, pr_diag, du_diag, diag_hess, n, m, ns, ndrange=ndrange)
+    ev = _build_dense_kkt_system_kernel!(CUDADevice())(
+        dest, hess, jac, pr_diag, du_diag, diag_hess, ind_ineq, con_scale, n, m, ns,
+        ndrange=ndrange
+    )
     wait(ev)
 end
 
