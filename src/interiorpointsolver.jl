@@ -284,6 +284,7 @@ function solve_refine_wrapper!(ips::InteriorPointSolver{<:DenseCondensedKKTSyste
     n = num_variables(kkt)
 
     Σₛ = view(kkt.pr_diag, n+1:ips.n)
+    α = kkt.constraint_scaling[kkt.ind_ineq]
 
     # Decompose right hand side
     bx = view(b, 1:n)
@@ -293,7 +294,7 @@ function solve_refine_wrapper!(ips::InteriorPointSolver{<:DenseCondensedKKTSyste
 
     jt = zeros(ips.n)
     v = zeros(ips.m)
-    v[kkt.ind_ineq] .= Σₛ .* bz .+ bs
+    v[kkt.ind_ineq] .= (Σₛ .* bz .+ α .* bs) ./ α.^2
     jtprod!(jt, kkt, v)
     b_c = [bx + jt[1:n]; by]
     x_c = similar(b_c)
@@ -304,13 +305,13 @@ function solve_refine_wrapper!(ips::InteriorPointSolver{<:DenseCondensedKKTSyste
     # Decompose results
     xx = view(x, 1:n)
     xs = view(x, n+1:ips.n) # ips.n includes slack variables
-    xy = view(x, ips.n .+ ips.kkt.ind_eq)
-    xz = view(x, ips.n .+ ips.kkt.ind_ineq)
+    xy = view(x, ips.n .+ kkt.ind_eq)
+    xz = view(x, ips.n .+ kkt.ind_ineq)
 
     xx .= x_c[1:n]
     xy .= x_c[1+n:end]
-    xz .= sqrt.(Σₛ) .* (kkt.jac_ineq * xx) .- Σₛ .* bz .- bs
-    xs .= (bs .+ xz) ./ Σₛ
+    xz .= sqrt.(Σₛ) ./ α .* (kkt.jac_ineq * xx) .- Σₛ .* bz ./ α.^2 .- bs ./ α
+    xs .= (bs .+ α .* xz) ./ Σₛ
 
     fixed_variable_treatment_vec!(x, ips.ind_fixed)
     return solve_status
