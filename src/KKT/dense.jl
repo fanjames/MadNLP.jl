@@ -266,10 +266,10 @@ function _build_condensed_kkt_system!(dest, hess, jac, pr_diag, du_diag, ind_eq,
     end
 end
 
-function _build_ineq_jac!(dest, jac, pr_diag, ind_ineq, n, m_ineq)
+function _build_ineq_jac!(dest, jac, pr_diag, ind_ineq, con_scale, n, m_ineq)
     for i in 1:m_ineq, j in 1:n
         is = ind_ineq[i]
-        dest[i, j] = jac[is, j] * sqrt(pr_diag[n+i])
+        dest[i, j] = jac[is, j] * sqrt(pr_diag[n+i]) / con_scale[is]
     end
 end
 
@@ -279,8 +279,9 @@ function build_kkt!(kkt::DenseCondensedKKTSystem{T, VT, MT}) where {T, VT, MT}
     m = size(kkt.jac, 1)
     ns = length(kkt.ind_ineq)
 
+    fill!(kkt.aug_com, zero(T))
     # Build √Σₛ * J
-    _build_ineq_jac!(kkt.jac_ineq, kkt.jac, kkt.pr_diag, kkt.ind_ineq, n, ns)
+    _build_ineq_jac!(kkt.jac_ineq, kkt.jac, kkt.pr_diag, kkt.ind_ineq, kkt.constraint_scaling, n, ns)
 
     # J' * Σₛ * J
     mul!(kkt.aug_com, kkt.jac_ineq', kkt.jac_ineq)
