@@ -45,7 +45,7 @@ using Random
 
         kkt = ipd.kkt
         @test isa(kkt, MadNLP.DenseKKTSystem)
-        @test size(kkt.jac) == (m, n + ns)
+        @test size(kkt.jac) == (m, n)
         @test ipd.linear_solver.dense === kkt.aug_com
         @test size(kkt.hess) == (n, n)
         @test length(kkt.pr_diag) == n + ns
@@ -79,7 +79,7 @@ function _compare_dense_with_sparse(n, m, ind_fixed)
     @test ips.obj_val ≈ ipd.obj_val atol=1e-10
     @test ips.x ≈ ipd.x atol=1e-10
     @test ips.l ≈ ipd.l atol=1e-10
-    @test ips.kkt.jac_com == ipd.kkt.jac
+    @test ips.kkt.jac_com[:, 1:n] == ipd.kkt.jac
     @test Symmetric(ips.kkt.aug_com, :L) ≈ ipd.kkt.aug_com atol=1e-10
 end
 

@@ -20,17 +20,86 @@ struct DenseKKTSystem{T, VT, MT} <: AbstractReducedKKTSystem{T, MT}
     # KKT system
     aug_com::MT
     # Info
+    n_ineq::Int
     ind_ineq::Vector{Int}
     ind_fixed::Vector{Int}
-    jacobian_scaling::VT
+    constraint_scaling::VT
     # Buffers
     etc::Dict{Symbol, Any}
 end
 
+"""
+    DenseCondensedKKTSystem{T, VT, MT} <: AbstractCondensedKKTSystem{T, MT}
+
+Implement [`AbstractCondensedKKTSystem`](@ref) with dense matrices.
+
+Requires a dense linear solver to factorize the associated KKT system (otherwise an error is returned).
+
+"""
+struct DenseCondensedKKTSystem{T, VT, MT} <: AbstractCondensedKKTSystem{T, MT}
+    hess::MT
+    jac::MT
+    jac_ineq::MT
+    pr_diag::VT
+    du_diag::VT
+    # KKT system
+    aug_com::MT
+    # Info
+    n_eq::Int
+    ind_eq::Vector{Int}
+    n_ineq::Int
+    ind_ineq::Vector{Int}
+    ind_fixed::Vector{Int}
+    constraint_scaling::VT
+    # Buffers
+    etc::Dict{Symbol, Any}
+end
+
+# For templating
+const AbstractDenseKKTSystem{T, VT, MT} = Union{DenseKKTSystem{T, VT, MT}, DenseCondensedKKTSystem{T, VT, MT}}
+
+#=
+    Generic functions
+=#
+
+function mul!(y::AbstractVector, kkt::AbstractDenseKKTSystem, x::AbstractVector)
+    mul!(y, kkt.aug_com, x)
+end
+
+function jtprod!(y::AbstractVector, kkt::AbstractDenseKKTSystem, x::AbstractVector)
+    nx = size(kkt.hess, 1)
+    ns = kkt.n_ineq
+    yx = view(y, 1:nx)
+    ys = view(y, 1+nx:nx+ns)
+    # / x
+    mul!(yx, kkt.jac', x)
+    # / s
+    ys .= -x[kkt.ind_ineq] .* kkt.constraint_scaling[kkt.ind_ineq]
+    return
+end
+
+function set_jacobian_scaling!(kkt::AbstractDenseKKTSystem, constraint_scaling::AbstractVector)
+    copyto!(kkt.constraint_scaling, constraint_scaling)
+end
+
+function compress_jacobian!(kkt::AbstractDenseKKTSystem{T, VT, MT}) where {T, VT, MT}
+    # Scale
+    kkt.jac .*= kkt.constraint_scaling
+    return
+end
+
+get_raw_jacobian(kkt::AbstractDenseKKTSystem) = kkt.jac
+nnz_jacobian(kkt::AbstractDenseKKTSystem) = length(kkt.jac)
+
+
+#=
+    DenseKKTSystem
+=#
+
 function DenseKKTSystem{T, VT, MT}(n, m, ind_ineq, ind_fixed) where {T, VT, MT}
     ns = length(ind_ineq)
     hess = MT(undef, n, n)
-    jac = MT(undef, m, n+ns)
+    jac = MT(undef, m, n)
     pr_diag = VT(undef, n+ns)
     du_diag = VT(undef, m)
     diag_hess = VT(undef, n)
@@ -43,7 +112,7 @@ function DenseKKTSystem{T, VT, MT}(n, m, ind_ineq, ind_fixed) where {T, VT, MT}
         MT(undef, n+ns+m, n+ns+m)
     end
 
-    jacobian_scaling = VT(undef, m)
+    constraint_scaling = VT(undef, m)
 
     # Init!
     fill!(aug_com, zero(T))
@@ -52,11 +121,11 @@ function DenseKKTSystem{T, VT, MT}(n, m, ind_ineq, ind_fixed) where {T, VT, MT}
     fill!(pr_diag, zero(T))
     fill!(du_diag, zero(T))
     fill!(diag_hess, zero(T))
-    fill!(jacobian_scaling, one(T))
+    fill!(constraint_scaling, one(T))
 
     return DenseKKTSystem{T, VT, MT}(
         hess, jac, pr_diag, du_diag, diag_hess, aug_com,
-        ind_ineq, ind_fixed, jacobian_scaling, Dict{Symbol, Any}(),
+        ns, ind_ineq, ind_fixed, constraint_scaling, Dict{Symbol, Any}(),
     )
 end
 
@@ -76,10 +145,6 @@ function get_jacobian(kkt::DenseKKTSystem)
     return view(kkt.jac, :, 1:n)
 end
 
-get_raw_jacobian(kkt::DenseKKTSystem) = kkt.jac
-
-nnz_jacobian(kkt::DenseKKTSystem) = length(kkt.jac)
-
 function diag_add!(dest::AbstractMatrix, d1::AbstractVector, d2::AbstractVector)
     n = length(d1)
     @inbounds for i in 1:n
@@ -87,7 +152,7 @@ function diag_add!(dest::AbstractMatrix, d1::AbstractVector, d2::AbstractVector)
     end
 end
 
-function _build_dense_kkt_system!(dest, hess, jac, pr_diag, du_diag, diag_hess, n, m, ns)
+function _build_dense_kkt_system!(dest, hess, jac, pr_diag, du_diag, diag_hess, ind_ineq, con_scale, n, m, ns)
     # Transfer Hessian
     for i in 1:n, j in 1:i
         if i == j
@@ -101,10 +166,16 @@ function _build_dense_kkt_system!(dest, hess, jac, pr_diag, du_diag, diag_hess, 
     for i in 1:ns
         dest[i+n, i+n] = pr_diag[i+n]
     end
-    # Transfer Jacobian
-    for i in 1:m, j in 1:(n+ns)
+    # Transfer Jacobian / variables
+    for i in 1:m, j in 1:n
         dest[i + n + ns, j] = jac[i, j]
         dest[j, i + n + ns] = jac[i, j]
+    end
+    # Transfer Jacobian / slacks
+    for j in 1:ns
+        is = ind_ineq[j]
+        dest[is + n + ns, j + n] = - con_scale[is]
+        dest[j + n, is + n + ns] = - con_scale[is]
     end
     # Transfer dual regularization
     for i in 1:m
@@ -119,21 +190,12 @@ function build_kkt!(kkt::DenseKKTSystem{T, VT, MT}) where {T, VT, MT}
     if m == 0 # If problem is unconstrained, just need to update the diagonal
         diag_add!(kkt.aug_com, kkt.diag_hess, kkt.pr_diag)
     else # otherwise, we update the full matrix
-        _build_dense_kkt_system!(kkt.aug_com, kkt.hess, kkt.jac, kkt.pr_diag, kkt.du_diag, kkt.diag_hess, n, m, ns)
+        _build_dense_kkt_system!(kkt.aug_com, kkt.hess, kkt.jac,
+                                 kkt.pr_diag, kkt.du_diag, kkt.diag_hess,
+                                 kkt.ind_ineq, kkt.constraint_scaling,
+                                 n, m, ns)
     end
     treat_fixed_variable!(kkt)
-end
-
-function compress_jacobian!(kkt::DenseKKTSystem{T, VT, MT}) where {T, VT, MT}
-    m = size(kkt.jac, 1)
-    n = size(kkt.hess, 1)
-    # Add slack indexes
-    for i in kkt.ind_ineq
-        kkt.jac[i, i+n] = -one(T)
-    end
-    # Scale
-    kkt.jac .*= kkt.jacobian_scaling
-    return
 end
 
 function compress_hessian!(kkt::DenseKKTSystem)
@@ -141,15 +203,93 @@ function compress_hessian!(kkt::DenseKKTSystem)
     diag!(kkt.diag_hess, kkt.hess)
 end
 
-function mul!(y::AbstractVector, kkt::DenseKKTSystem, x::AbstractVector)
-    mul!(y, kkt.aug_com, x)
+
+#=
+    DenseCondensedKKTSystem
+=#
+
+function DenseCondensedKKTSystem{T, VT, MT}(nlp::AbstractNLPModel, info_constraints=get_index_constraints(nlp)) where {T, VT, MT}
+    n = get_nvar(nlp)
+    m = get_ncon(nlp)
+    ns = length(info_constraints.ind_ineq)
+    n_eq = m - ns
+    hess = MT(undef, n, n)
+    jac = MT(undef, m, n)
+    jac_ineq = MT(undef, ns, n)
+    pr_diag = VT(undef, n+ns)
+    du_diag = VT(undef, m)
+
+    aug_com = MT(undef, n+m-ns, n+m-ns)
+
+    constraint_scaling = VT(undef, m)
+
+    # Init!
+    fill!(aug_com, zero(T))
+    fill!(hess,    zero(T))
+    fill!(jac,     zero(T))
+    fill!(pr_diag, zero(T))
+    fill!(du_diag, zero(T))
+    fill!(constraint_scaling, one(T))
+
+    ind_eq = setdiff(1:m, info_constraints.ind_ineq)
+
+    return DenseCondensedKKTSystem{T, VT, MT}(
+        hess, jac, jac_ineq, pr_diag, du_diag, aug_com,
+        n_eq, ind_eq, ns, info_constraints.ind_ineq, info_constraints.ind_fixed,
+        constraint_scaling, Dict{Symbol, Any}(),
+    )
 end
 
-function jtprod!(y::AbstractVector, kkt::DenseKKTSystem, x::AbstractVector)
-    mul!(y, kkt.jac', x)
+is_reduced(kkt::DenseCondensedKKTSystem) = true
+num_variables(kkt::DenseCondensedKKTSystem) = size(kkt.hess, 1)
+
+function _build_condensed_kkt_system!(dest, hess, jac, pr_diag, du_diag, ind_eq, n, m_eq)
+    # Transfer Hessian
+    for i in 1:n, j in 1:i
+        if i == j
+            dest[i, i] += pr_diag[i] + hess[i, i]
+        else
+            dest[i, j] += hess[i, j]
+            dest[j, i] += hess[j, i]
+        end
+    end
+    # Transfer Jacobian / variables
+    for i in 1:m_eq, j in 1:n
+        is = ind_eq[i]
+        dest[i + n + ns, j] = jac[is, j]
+        dest[j, i + n + ns] = jac[is, j]
+    end
+    # Transfer dual regularization
+    for i in 1:m_eq
+        is = ind_eq[i]
+        dest[i + n + ns, i + n + ns] = du_diag[is]
+    end
 end
 
-function set_jacobian_scaling!(kkt::DenseKKTSystem, constraint_scaling::AbstractVector)
-    copyto!(kkt.jacobian_scaling, constraint_scaling)
+function _build_ineq_jac!(dest, jac, pr_diag, ind_ineq, n, m_ineq)
+    for i in 1:m_ineq, j in 1:n
+        is = ind_ineq[i]
+        dest[i, j] = jac[is, j] * sqrt(pr_diag[n+i])
+    end
+end
+
+function build_kkt!(kkt::DenseCondensedKKTSystem{T, VT, MT}) where {T, VT, MT}
+    n = size(kkt.hess, 1)
+    ns = kkt.n_ineq
+    m = size(kkt.jac, 1)
+    ns = length(kkt.ind_ineq)
+
+    # Build √Σₛ * J
+    _build_ineq_jac!(kkt.jac_ineq, kkt.jac, kkt.pr_diag, kkt.ind_ineq, n, ns)
+
+    # J' * Σₛ * J
+    mul!(kkt.aug_com, kkt.jac_ineq', kkt.jac_ineq)
+
+    _build_condensed_kkt_system!(
+        kkt.aug_com, kkt.hess, kkt.jac,
+        kkt.pr_diag, kkt.du_diag,
+        kkt.ind_eq, n, kkt.n_eq,
+    )
+    treat_fixed_variable!(kkt)
 end
 

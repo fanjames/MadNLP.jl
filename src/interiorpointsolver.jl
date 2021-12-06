@@ -274,6 +274,48 @@ function solve_refine_wrapper!(ips::InteriorPointSolver, x,b)
     return solve_status
 end
 
+function solve_refine_wrapper!(ips::InteriorPointSolver{<:DenseCondensedKKTSystem}, x,b)
+    cnt = ips.cnt
+    @trace(ips.logger,"Iterative solution started.")
+    fixed_variable_treatment_vec!(b, ips.ind_fixed)
+
+    kkt = ips.kkt
+
+    n = num_variables(kkt)
+
+    Σₛ = view(kkt.pr_diag, n+1:ips.n)
+
+    # Decompose right hand side
+    bx = view(b, 1:n)
+    bs = view(b, n+1:ips.n) # ips.n includes slack variables
+    by = view(b, ips.n .+ kkt.ind_eq)
+    bz = view(b, ips.n .+ kkt.ind_ineq)
+
+    jt = zeros(ips.n)
+    v = zeros(ips.m)
+    v[kkt.ind_ineq] .= Σₛ .* bz .+ bs
+    jtprod!(jt, kkt, v)
+    b_c = [bx + jt[1:n]; by]
+    x_c = similar(b_c)
+
+    cnt.linear_solver_time += @elapsed (result = solve_refine!(x_c, ips.iterator, b_c))
+    solve_status = (result == :Solved)
+
+    # Decompose results
+    xx = view(x, 1:n)
+    xs = view(x, n+1:ips.n) # ips.n includes slack variables
+    xy = view(x, ips.n .+ ips.kkt.ind_eq)
+    xz = view(x, ips.n .+ ips.kkt.ind_ineq)
+
+    xx .= x_c[1:n]
+    xy .= x_c[1+n:end]
+    xz .= sqrt.(Σₛ) .* (kkt.jac_ineq * xx) .- Σₛ .* bz .- bs
+    xs .= (bs .+ xz) ./ Σₛ
+
+    fixed_variable_treatment_vec!(x, ips.ind_fixed)
+    return solve_status
+end
+
 function eval_f_wrapper(ips::InteriorPointSolver, x::Vector{Float64})
     nlp = ips.nlp
     cnt = ips.cnt
@@ -338,7 +380,7 @@ function eval_lag_hess_wrapper!(ipp::InteriorPointSolver, kkt::AbstractKKTSystem
     return hess
 end
 
-function eval_jac_wrapper!(ipp::InteriorPointSolver, kkt::DenseKKTSystem, x::Vector{Float64})
+function eval_jac_wrapper!(ipp::InteriorPointSolver, kkt::AbstractDenseKKTSystem, x::Vector{Float64})
     nlp = ipp.nlp
     cnt = ipp.cnt
     ns = length(ipp.ind_ineq)
@@ -352,7 +394,7 @@ function eval_jac_wrapper!(ipp::InteriorPointSolver, kkt::DenseKKTSystem, x::Vec
     return jac
 end
 
-function eval_lag_hess_wrapper!(ipp::InteriorPointSolver, kkt::DenseKKTSystem, x::Vector{Float64},l::Vector{Float64};is_resto=false)
+function eval_lag_hess_wrapper!(ipp::InteriorPointSolver, kkt::AbstractDenseKKTSystem, x::Vector{Float64},l::Vector{Float64};is_resto=false)
     nlp = ipp.nlp
     cnt = ipp.cnt
     @trace(ipp.logger,"Evaluating Lagrangian Hessian.")
@@ -384,6 +426,10 @@ function InteriorPointSolver(nlp::AbstractNLPModel;
         MT = Matrix{Float64}
         VT = Vector{Float64}
         DenseKKTSystem{Float64, VT, MT}
+    elseif opt.kkt_system == CONDENSED_KKT_SYSTEM
+        MT = Matrix{Float64}
+        VT = Vector{Float64}
+        DenseCondensedKKTSystem{Float64, VT, MT}
     end
     return InteriorPointSolver{KKTSystem}(nlp, opt; option_linear_solver=option_dict)
 end
@@ -489,9 +535,10 @@ function InteriorPointSolver{KKTSystem}(nlp::AbstractNLPModel, opt::Options;
     cnt.linear_solver_time =
         @elapsed linear_solver = opt.linear_solver.Solver(get_kkt(kkt) ; option_dict=option_linear_solver,logger=logger)
 
+    n_kkt = size(get_kkt(kkt), 1)
     @trace(logger,"Initializing iterative solver.")
     iterator = opt.iterator.Solver(
-        similar(d, size(get_kkt(kkt), 1)),
+        similar(d, n_kkt),
         (b, x)->mul!(b, kkt, x), (x)->solve!(linear_solver, x) ; option_dict=option_linear_solver)
 
     @trace(logger,"Initializing fixed variable treatment scheme.")
