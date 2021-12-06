@@ -78,16 +78,27 @@ end
 
 function MadNLP.jtprod!(y::AbstractVector, kkt::MadNLP.DenseKKTSystem{T, VT, MT}, x::AbstractVector) where {T, VT<:CuVector{T}, MT<:CuMatrix{T}}
     # Load buffers
+    nx = size(kkt.jac, 2)
+    ns = length(kkt.ind_ineq)
     haskey(kkt.etc, :jac_w1) || (kkt.etc[:jac_w1] = CuVector{T}(undef, size(kkt.jac, 1)))
-    haskey(kkt.etc, :jac_w2) || (kkt.etc[:jac_w2] = CuVector{T}(undef, size(kkt.jac, 2)))
+    haskey(kkt.etc, :jac_w2) || (kkt.etc[:jac_w2] = CuVector{T}(undef, nx))
+    haskey(kkt.etc, :jac_w3) || (kkt.etc[:jac_w3] = CuVector{T}(undef, ns))
 
     d_x = kkt.etc[:jac_w1]::VT
-    d_y = kkt.etc[:jac_w2]::VT
+    d_yx = kkt.etc[:jac_w2]::VT
+    d_ys = kkt.etc[:jac_w3]::VT
 
     # x and y can be host arrays. Copy them on the device to avoid side effect.
     copyto!(d_x, x)
-    LinearAlgebra.mul!(d_y, kkt.jac', d_x)
-    copyto!(y, d_y)
+
+    # / x
+    LinearAlgebra.mul!(d_yx, kkt.jac', d_x)
+    copyto!(y, 1, d_yx, 1, nx)
+
+    # / s
+    d_ys .= -d_x[kkt.ind_ineq] .* kkt.constraint_scaling[kkt.ind_ineq]
+    copyto!(y, nx+1, d_ys, 1, ns)
+    return
 end
 
 function MadNLP.set_aug_diagonal!(kkt::MadNLP.DenseKKTSystem{T, VT, MT}, ips::MadNLP.InteriorPointSolver) where {T, VT<:CuVector{T}, MT<:CuMatrix{T}}
@@ -116,10 +127,10 @@ end
         # Transfer slack diagonal
         dest[i, i] = pr_diag[i]
         # Transfer Jacobian wrt slack
-        j = i - ns
-        is = ind_ineq[j]
-        dest[is + n + ns, j + n] = - con_scale[is]
-        dest[j + n, is + n + ns] = - con_scale[is]
+        js = i - n
+        is = ind_ineq[js]
+        dest[is + n + ns, is + n] = - con_scale[is]
+        dest[is + n, is + n + ns] = - con_scale[is]
     elseif i <= n + ns + m
         # Transfer Jacobian wrt variable x
         i_ = i - n - ns
@@ -134,22 +145,12 @@ function MadNLP._build_dense_kkt_system!(
     dest::CuMatrix, hess::CuMatrix, jac::CuMatrix,
     pr_diag::CuVector, du_diag::CuVector, diag_hess::CuVector, ind_ineq, con_scale, n, m, ns
 )
-    ndrange = (n+m+ns, n+ns)
+    ind_ineq_gpu = ind_ineq |> CuArray
+    ndrange = (n+m+ns, n)
     ev = _build_dense_kkt_system_kernel!(CUDADevice())(
-        dest, hess, jac, pr_diag, du_diag, diag_hess, ind_ineq, con_scale, n, m, ns,
+        dest, hess, jac, pr_diag, du_diag, diag_hess, ind_ineq_gpu, con_scale, n, m, ns,
         ndrange=ndrange
     )
     wait(ev)
 end
 
-function MadNLP.compress_jacobian!(kkt::MadNLP.DenseKKTSystem{T, VT, MT}) where {T, VT<:CuVector{T}, MT<:CuMatrix{T}}
-    m = size(kkt.jac, 1)
-    n = size(kkt.hess, 1)
-    # Extract diagonal terms corresponding to inequalities
-    index = (LinearAlgebra.diagind(kkt.jac) .+ n * m)[kkt.ind_ineq]
-    # Add slack indexes
-    kkt.jac[index] .= -one(T)
-    # Scale
-    kkt.jac .*= kkt.jacobian_scaling
-    return
-end
