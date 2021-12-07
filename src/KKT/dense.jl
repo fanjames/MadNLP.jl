@@ -62,10 +62,6 @@ const AbstractDenseKKTSystem{T, VT, MT} = Union{DenseKKTSystem{T, VT, MT}, Dense
     Generic functions
 =#
 
-function mul!(y::AbstractVector, kkt::AbstractDenseKKTSystem, x::AbstractVector)
-    mul!(y, kkt.aug_com, x)
-end
-
 function jtprod!(y::AbstractVector, kkt::AbstractDenseKKTSystem, x::AbstractVector)
     nx = size(kkt.hess, 1)
     ns = kkt.n_ineq
@@ -137,6 +133,10 @@ end
 
 is_reduced(::DenseKKTSystem) = true
 num_variables(kkt::DenseKKTSystem) = length(kkt.pr_diag)
+
+function mul!(y::AbstractVector, kkt::DenseKKTSystem, x::AbstractVector)
+    mul!(y, kkt.aug_com, x)
+end
 
 # Special getters for Jacobian
 function get_jacobian(kkt::DenseKKTSystem)
@@ -282,7 +282,6 @@ function build_kkt!(kkt::DenseCondensedKKTSystem{T, VT, MT}) where {T, VT, MT}
     n = size(kkt.hess, 1)
     ns = kkt.n_ineq
     m = size(kkt.jac, 1)
-    ns = length(kkt.ind_ineq)
 
     fill!(kkt.aug_com, zero(T))
     # Build √Σₛ * J
@@ -301,5 +300,44 @@ end
 
 function is_inertia_correct(kkt::DenseCondensedKKTSystem, num_pos, num_zero, num_neg)
     return (num_zero == 0)
+end
+
+# For inertia-free regularization
+function _mul_expanded!(y::AbstractVector, kkt::DenseCondensedKKTSystem, x::AbstractVector)
+    n = size(kkt.hess, 1)
+    ns = kkt.n_ineq
+    m = size(kkt.jac, 1)
+
+    Σₓ = view(kkt.pr_diag, 1:n)
+    Σₛ = view(kkt.pr_diag, 1+n:n+ns)
+    Σd = kkt.du_diag
+
+    xx = view(x, 1:n)
+    xs = view(x, 1+n:n+ns)
+    xy = view(x, 1+n+ns:n+ns+m)
+
+    yx = view(y, 1:n)
+    ys = view(y, 1+n:n+ns)
+    yy = view(y, 1+n+ns:n+ns+m)
+
+    yx .= Σₓ .* xx
+    mul!(yx, kkt.hess, xx, 1.0, 1.0)
+    mul!(yx, kkt.jac', xy, 1.0, 1.0)
+
+    ys .= Σₛ .* xs
+    ys .-= kkt.constraint_scaling[kkt.ind_ineq] .* xy[kkt.ind_ineq]
+
+    yy .= Σd .* xy
+    mul!(yy, kkt.jac, xx, 1.0, 1.0)
+    yy[kkt.ind_ineq] .-= kkt.constraint_scaling[kkt.ind_ineq] .* xs
+end
+
+function mul!(y::AbstractVector, kkt::DenseCondensedKKTSystem, x::AbstractVector)
+    # TODO: implement properly with AbstractKKTRHS
+    if length(y) == length(x) == size(kkt.aug_com, 1)
+        mul!(y, kkt.aug_com, x)
+    else
+        _mul_expanded!(y, kkt, x)
+    end
 end
 
