@@ -243,7 +243,10 @@ end
 is_reduced(kkt::DenseCondensedKKTSystem) = true
 num_variables(kkt::DenseCondensedKKTSystem) = size(kkt.hess, 1)
 
-function _build_condensed_kkt_system!(dest, hess, jac, pr_diag, du_diag, ind_eq, n, m_eq)
+function _build_condensed_kkt_system!(
+    dest::AbstractMatrix, hess::AbstractMatrix, jac::AbstractMatrix,
+    pr_diag::AbstractVector, du_diag::AbstractVector, ind_eq::AbstractVector, n, m_eq,
+)
     # Transfer Hessian
     for i in 1:n, j in 1:i
         if i == j
@@ -256,17 +259,19 @@ function _build_condensed_kkt_system!(dest, hess, jac, pr_diag, du_diag, ind_eq,
     # Transfer Jacobian / variables
     for i in 1:m_eq, j in 1:n
         is = ind_eq[i]
-        dest[i + n + ns, j] = jac[is, j]
-        dest[j, i + n + ns] = jac[is, j]
+        dest[i + n, j] = jac[is, j]
+        dest[j, i + n] = jac[is, j]
     end
     # Transfer dual regularization
     for i in 1:m_eq
         is = ind_eq[i]
-        dest[i + n + ns, i + n + ns] = du_diag[is]
+        dest[i + n, i + n] = du_diag[is]
     end
 end
 
-function _build_ineq_jac!(dest, jac, pr_diag, ind_ineq, con_scale, n, m_ineq)
+function _build_ineq_jac!(
+    dest::AbstractMatrix, jac::AbstractMatrix, pr_diag::AbstractVector, ind_ineq::AbstractVector, con_scale::AbstractVector, n, m_ineq,
+)
     for i in 1:m_ineq, j in 1:n
         is = ind_ineq[i]
         dest[i, j] = jac[is, j] * sqrt(pr_diag[n+i]) / con_scale[is]
@@ -292,5 +297,9 @@ function build_kkt!(kkt::DenseCondensedKKTSystem{T, VT, MT}) where {T, VT, MT}
         kkt.ind_eq, n, kkt.n_eq,
     )
     treat_fixed_variable!(kkt)
+end
+
+function is_inertia_correct(kkt::DenseCondensedKKTSystem, num_pos, num_zero, num_neg)
+    return (num_zero == 0)
 end
 
