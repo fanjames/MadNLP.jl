@@ -31,7 +31,7 @@ end
 MadNLP.is_valid(src::CuArray) = true
 
 # Constraint scaling
-function MadNLP.set_con_scale!(con_scale::AbstractVector, jac::CuMatrix, nlp_scaling_max_gradient)
+function MadNLP._set_con_scale!(con_scale::AbstractVector, jac::CuMatrix, nlp_scaling_max_gradient)
     # Compute reduction on the GPU with built-in CUDA.jl function
     d_con_scale = maximum(abs, jac, dims=2)
     copyto!(con_scale, d_con_scale)
@@ -62,7 +62,7 @@ end
 #=
     DenseKKTSystem kernels
 =#
-function MadNLP.mul!(y::AbstractVector, kkt::MadNLP.DenseKKTSystem{T, VT, MT}, x::AbstractVector) where {T, VT<:CuVector{T}, MT<:CuMatrix{T}}
+function MadNLP.mul!(y::AbstractVector, kkt::MadNLP.AbstractDenseKKTSystem{T, VT, MT}, x::AbstractVector) where {T, VT<:CuVector{T}, MT<:CuMatrix{T}}
     # Load buffers
     haskey(kkt.etc, :hess_w1) || (kkt.etc[:hess_w1] = CuVector{T}(undef, size(kkt.aug_com, 1)))
     haskey(kkt.etc, :hess_w2) || (kkt.etc[:hess_w2] = CuVector{T}(undef, size(kkt.aug_com, 1)))
@@ -76,7 +76,7 @@ function MadNLP.mul!(y::AbstractVector, kkt::MadNLP.DenseKKTSystem{T, VT, MT}, x
     copyto!(y, d_y)
 end
 
-function MadNLP.jtprod!(y::AbstractVector, kkt::MadNLP.DenseKKTSystem{T, VT, MT}, x::AbstractVector) where {T, VT<:CuVector{T}, MT<:CuMatrix{T}}
+function MadNLP.jtprod!(y::AbstractVector, kkt::MadNLP.AbstractDenseKKTSystem{T, VT, MT}, x::AbstractVector) where {T, VT<:CuVector{T}, MT<:CuMatrix{T}}
     # Load buffers
     nx = size(kkt.jac, 2)
     ns = length(kkt.ind_ineq)
@@ -101,7 +101,7 @@ function MadNLP.jtprod!(y::AbstractVector, kkt::MadNLP.DenseKKTSystem{T, VT, MT}
     return
 end
 
-function MadNLP.set_aug_diagonal!(kkt::MadNLP.DenseKKTSystem{T, VT, MT}, ips::MadNLP.InteriorPointSolver) where {T, VT<:CuVector{T}, MT<:CuMatrix{T}}
+function MadNLP.set_aug_diagonal!(kkt::MadNLP.AbstractDenseKKTSystem{T, VT, MT}, ips::MadNLP.InteriorPointSolver) where {T, VT<:CuVector{T}, MT<:CuMatrix{T}}
     haskey(kkt.etc, :pr_diag_host) || (kkt.etc[:pr_diag_host] = Vector{T}(undef, length(kkt.pr_diag)))
     pr_diag_h = kkt.etc[:pr_diag_host]::Vector{T}
     # Broadcast is not working as MadNLP array are allocated on the CPU,
@@ -110,6 +110,10 @@ function MadNLP.set_aug_diagonal!(kkt::MadNLP.DenseKKTSystem{T, VT, MT}, ips::Ma
     copyto!(kkt.pr_diag, pr_diag_h)
     fill!(kkt.du_diag, 0.0)
 end
+
+#=
+    DenseKKTSystem
+=#
 
 @kernel function _build_dense_kkt_system_kernel!(
     dest, hess, jac, pr_diag, du_diag, diag_hess, ind_ineq, con_scale, n, m, ns
@@ -150,6 +154,69 @@ function MadNLP._build_dense_kkt_system!(
     ev = _build_dense_kkt_system_kernel!(CUDADevice())(
         dest, hess, jac, pr_diag, du_diag, diag_hess, ind_ineq_gpu, con_scale, n, m, ns,
         ndrange=ndrange
+    )
+    wait(ev)
+end
+
+
+#=
+    DenseCondensedKKTSystem
+=#
+
+@kernel function _build_jacobian_condensed_kernel!(
+    dest, jac, pr_diag, ind_ineq, con_scale, n, m_ineq,
+)
+    i, j = @index(Global, NTuple)
+    is = ind_ineq[i]
+    dest[i, j] = jac[is, j] * sqrt(pr_diag[n+i]) / con_scale[is]
+end
+
+function MadNLP._build_ineq_jac!(
+    dest::CuMatrix, jac::CuMatrix, pr_diag::CuVector,
+    ind_ineq::AbstractVector, con_scale::CuVector, n, m_ineq,
+)
+    ind_ineq_gpu = ind_ineq |> CuArray
+    ndrange = (m_ineq, n)
+    ev = _build_jacobian_condensed_kernel!(CUDADevice())(
+        dest, jac, pr_diag, ind_ineq_gpu, con_scale, n, m_ineq,
+        ndrange=ndrange,
+    )
+    wait(ev)
+end
+
+@kernel function _build_condensed_kkt_system_kernel!(
+    dest, hess, jac, pr_diag, du_diag, ind_eq, n, m_eq,
+)
+    i, j = @index(Global, NTuple)
+
+    # Transfer Hessian
+    if i <= n
+        if i == j
+            dest[i, i] += pr_diag[i] + hess[i, i]
+        else
+            dest[i, j] += hess[i, j]
+            dest[j, i] += hess[j, i]
+        end
+    elseif i <= n + m_eq
+        i_ = i - n
+        is = ind_eq[i_]
+        # Jacobian / equality
+        dest[i_ + n, j] = jac[is, j]
+        dest[j, i_ + n] = jac[is, j]
+        # Transfer dual regularization
+        dest[i_ + n, i_ + n] = du_diag[is]
+    end
+end
+
+function MadNLP._build_condensed_kkt_system!(
+    dest::CuMatrix, hess::CuMatrix, jac::CuMatrix,
+    pr_diag::CuVector, du_diag::CuVector, ind_eq::AbstractVector, n, m_eq,
+)
+    ind_eq_gpu = ind_eq |> CuArray
+    ndrange = (n + m_eq, n)
+    ev = _build_condensed_kkt_system_kernel!(CUDADevice())(
+        dest, hess, jac, pr_diag, du_diag, ind_eq_gpu, n, m_eq,
+        ndrange=ndrange,
     )
     wait(ev)
 end

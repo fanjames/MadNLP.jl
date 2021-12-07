@@ -274,7 +274,7 @@ function solve_refine_wrapper!(ips::InteriorPointSolver, x,b)
     return solve_status
 end
 
-function solve_refine_wrapper!(ips::InteriorPointSolver{<:DenseCondensedKKTSystem}, x,b)
+function solve_refine_wrapper!(ips::InteriorPointSolver{<:DenseCondensedKKTSystem{T, VT, MT}}, x,b) where {T, VT, MT}
     cnt = ips.cnt
     @trace(ips.logger,"Iterative solution started.")
     fixed_variable_treatment_vec!(b, ips.ind_fixed)
@@ -282,9 +282,10 @@ function solve_refine_wrapper!(ips::InteriorPointSolver{<:DenseCondensedKKTSyste
     kkt = ips.kkt
 
     n = num_variables(kkt)
+    ns = length(kkt.ind_ineq)
 
-    Σₛ = view(kkt.pr_diag, n+1:ips.n)
-    α = kkt.constraint_scaling[kkt.ind_ineq]
+    Σₛ = view(kkt.pr_diag, n+1:ips.n) |> Array
+    α = kkt.constraint_scaling[kkt.ind_ineq] |> Array
 
     # Decompose right hand side
     bx = view(b, 1:n)
@@ -298,6 +299,7 @@ function solve_refine_wrapper!(ips::InteriorPointSolver{<:DenseCondensedKKTSyste
     jtprod!(jt, kkt, v)
     b_c = [bx + jt[1:n]; by]
     x_c = similar(b_c)
+    Jx_gpu = VT(undef, ns)
 
     cnt.linear_solver_time += @elapsed (result = solve_refine!(x_c, ips.iterator, b_c))
     solve_status = (result == :Solved)
@@ -310,7 +312,12 @@ function solve_refine_wrapper!(ips::InteriorPointSolver{<:DenseCondensedKKTSyste
 
     xx .= x_c[1:n]
     xy .= x_c[1+n:end]
-    xz .= sqrt.(Σₛ) ./ α .* (kkt.jac_ineq * xx) .- Σₛ .* bz ./ α.^2 .- bs ./ α
+
+    xx_gpu = xx |> VT
+    mul!(Jx_gpu, kkt.jac_ineq, xx_gpu)
+    Jx = Jx_gpu |> Array
+
+    xz .= sqrt.(Σₛ) ./ α .* Jx .- Σₛ .* bz ./ α.^2 .- bs ./ α
     xs .= (bs .+ α .* xz) ./ Σₛ
 
     fixed_variable_treatment_vec!(x, ips.ind_fixed)
