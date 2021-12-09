@@ -185,7 +185,7 @@ function MadNLP._build_ineq_jac!(
     wait(ev)
 end
 
-@kernel function _build_condensed_kkt_system_kernel!(
+@kernel function _build_condensed_kkt_system_kernel2!(
     dest, hess, jac, pr_diag, du_diag, ind_eq, n, m_eq,
 )
     i, j = @index(Global, NTuple)
@@ -196,7 +196,6 @@ end
             dest[i, i] += pr_diag[i] + hess[i, i]
         else
             dest[i, j] += hess[i, j]
-            dest[j, i] += hess[j, i]
         end
     elseif i <= n + m_eq
         i_ = i - n
@@ -215,31 +214,38 @@ function MadNLP._build_condensed_kkt_system!(
 )
     ind_eq_gpu = ind_eq |> CuArray
     ndrange = (n + m_eq, n)
-    ev = _build_condensed_kkt_system_kernel!(CUDADevice())(
+    ev = _build_condensed_kkt_system_kernel2!(CUDADevice())(
         dest, hess, jac, pr_diag, du_diag, ind_eq_gpu, n, m_eq,
-        ndrange=ndrange,
+        ndrange=ndrange, dependencies=Event(CUDADevice()),
     )
     wait(ev)
 end
 
 function MadNLP.mul!(y::AbstractVector, kkt::MadNLP.DenseCondensedKKTSystem{T, VT, MT}, x::AbstractVector) where {T, VT<:CuVector{T}, MT<:CuMatrix{T}}
     # Load buffers
-    haskey(kkt.etc, :hess_w1) || (kkt.etc[:hess_w1] = CuVector{T}(undef, size(kkt.aug_com, 1)))
-    haskey(kkt.etc, :hess_w2) || (kkt.etc[:hess_w2] = CuVector{T}(undef, size(kkt.aug_com, 1)))
-
-    d_x = kkt.etc[:hess_w1]::VT
-    d_y = kkt.etc[:hess_w2]::VT
 
     # x and y can be host arrays. Copy them on the device to avoid side effect.
-    copyto!(d_x, x)
 
     if length(y) == length(x) == size(kkt.aug_com, 1)
+        haskey(kkt.etc, :hess_w1) || (kkt.etc[:hess_w1] = CuVector{T}(undef, size(kkt.aug_com, 1)))
+        haskey(kkt.etc, :hess_w2) || (kkt.etc[:hess_w2] = CuVector{T}(undef, size(kkt.aug_com, 1)))
+
+        d_x = kkt.etc[:hess_w1]::VT
+        d_y = kkt.etc[:hess_w2]::VT
+        copyto!(d_x, x)
         LinearAlgebra.mul!(d_y, kkt.aug_com, d_x)
+        copyto!(y, d_y)
     else
+        haskey(kkt.etc, :hess_w3) || (kkt.etc[:hess_w3] = CuVector{T}(undef, length(x)))
+        haskey(kkt.etc, :hess_w4) || (kkt.etc[:hess_w4] = CuVector{T}(undef, length(y)))
+
+        d_x = kkt.etc[:hess_w3]::VT
+        d_y = kkt.etc[:hess_w4]::VT
+        copyto!(d_x, x)
         MadNLP._mul_expanded!(d_y, kkt, d_x)
+        copyto!(y, d_y)
     end
 
-    copyto!(y, d_y)
 end
 
 
