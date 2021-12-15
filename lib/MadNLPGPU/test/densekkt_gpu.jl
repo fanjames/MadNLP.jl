@@ -2,9 +2,9 @@
 using CUDA
 using MadNLPTests
 
-function _compare_gpu_with_cpu(n, m, ind_fixed)
+function _compare_gpu_with_cpu(kkt_system, n, m, ind_fixed)
     madnlp_options = Dict{Symbol, Any}(
-        :kkt_system=>MadNLP.DENSE_KKT_SYSTEM,
+        :kkt_system=>kkt_system,
         :linear_solver=>MadNLPLapackGPU,
         :print_level=>MadNLP.ERROR,
     )
@@ -32,13 +32,16 @@ function _compare_gpu_with_cpu(n, m, ind_fixed)
     @test h_ips.l ≈ d_ips.l atol=1e-10
 end
 
-@testset "MadNLP: dense versus sparse" begin
+@testset "MadNLPGPU: kkt_system = $(kkt_system)" for kkt_system in [
+        MadNLP.DENSE_KKT_SYSTEM,
+        MadNLP.CONDENSED_KKT_SYSTEM,
+    ]
     @testset "Size: ($n, $m)" for (n, m) in [(10, 0), (10, 5), (50, 10)]
-        _compare_gpu_with_cpu(n, m, Int[])
+        _compare_gpu_with_cpu(kkt_system, n, m, Int[])
     end
     @testset "Fixed variables" begin
         n, m = 10, 5
-        _compare_gpu_with_cpu(10, 5, Int[1, 2])
+        _compare_gpu_with_cpu(kkt_system, 10, 5, Int[1, 2])
     end
 end
 

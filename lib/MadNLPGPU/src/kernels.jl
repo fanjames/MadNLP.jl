@@ -27,7 +27,7 @@ end
     MadNLP kernels
 =#
 
-# Overload is_valid to avoid fallback to default is_valid, slow on GPU
+# Overload MadNLP.is_valid to avoid fallback to default is_valid, slow on GPU
 MadNLP.is_valid(src::CuArray) = true
 
 # Constraint scaling
@@ -124,9 +124,8 @@ end
         # Transfer Hessian
         if (i == j)
             dest[i, i] = pr_diag[i] + diag_hess[i]
-        elseif j <= n
+        else
             dest[i, j] = hess[i, j]
-            dest[j, i] = hess[j, i]
         end
     elseif i <= n + ns
         # Transfer slack diagonal
@@ -169,23 +168,26 @@ end
 )
     i, j = @index(Global, NTuple)
     is = ind_ineq[i]
-    dest[i, j] = jac[is, j] * sqrt(pr_diag[n+i]) / con_scale[is]
+    @inbounds dest[i, j] = jac[is, j] * sqrt(pr_diag[n+i]) / con_scale[is]
 end
 
 function MadNLP._build_ineq_jac!(
     dest::CuMatrix, jac::CuMatrix, pr_diag::CuVector,
-    ind_ineq::AbstractVector, con_scale::CuVector, n, m_ineq,
+    ind_ineq::AbstractVector, ind_fixed::AbstractVector, con_scale::CuVector, n, m_ineq,
 )
     ind_ineq_gpu = ind_ineq |> CuArray
     ndrange = (m_ineq, n)
     ev = _build_jacobian_condensed_kernel!(CUDADevice())(
         dest, jac, pr_diag, ind_ineq_gpu, con_scale, n, m_ineq,
-        ndrange=ndrange,
+        ndrange=ndrange, dependencies=Event(CUDADevice()),
     )
     wait(ev)
+    # need to zero the fixed components
+    dest[:, ind_fixed] .= 0.0
+    return
 end
 
-@kernel function _build_condensed_kkt_system_kernel2!(
+@kernel function _build_condensed_kkt_system_kernel!(
     dest, hess, jac, pr_diag, du_diag, ind_eq, n, m_eq,
 )
     i, j = @index(Global, NTuple)
@@ -193,18 +195,18 @@ end
     # Transfer Hessian
     if i <= n
         if i == j
-            dest[i, i] += pr_diag[i] + hess[i, i]
+            @inbounds dest[i, i] += pr_diag[i] + hess[i, i]
         else
-            dest[i, j] += hess[i, j]
+            @inbounds dest[i, j] += hess[i, j]
         end
     elseif i <= n + m_eq
         i_ = i - n
-        is = ind_eq[i_]
+        @inbounds is = ind_eq[i_]
         # Jacobian / equality
-        dest[i_ + n, j] = jac[is, j]
-        dest[j, i_ + n] = jac[is, j]
+        @inbounds dest[i_ + n, j] = jac[is, j]
+        @inbounds dest[j, i_ + n] = jac[is, j]
         # Transfer dual regularization
-        dest[i_ + n, i_ + n] = du_diag[is]
+        @inbounds dest[i_ + n, i_ + n] = du_diag[is]
     end
 end
 
@@ -214,7 +216,7 @@ function MadNLP._build_condensed_kkt_system!(
 )
     ind_eq_gpu = ind_eq |> CuArray
     ndrange = (n + m_eq, n)
-    ev = _build_condensed_kkt_system_kernel2!(CUDADevice())(
+    ev = _build_condensed_kkt_system_kernel!(CUDADevice())(
         dest, hess, jac, pr_diag, du_diag, ind_eq_gpu, n, m_eq,
         ndrange=ndrange, dependencies=Event(CUDADevice()),
     )
@@ -222,11 +224,8 @@ function MadNLP._build_condensed_kkt_system!(
 end
 
 function MadNLP.mul!(y::AbstractVector, kkt::MadNLP.DenseCondensedKKTSystem{T, VT, MT}, x::AbstractVector) where {T, VT<:CuVector{T}, MT<:CuMatrix{T}}
-    # Load buffers
-
-    # x and y can be host arrays. Copy them on the device to avoid side effect.
-
     if length(y) == length(x) == size(kkt.aug_com, 1)
+        # Load buffers
         haskey(kkt.etc, :hess_w1) || (kkt.etc[:hess_w1] = CuVector{T}(undef, size(kkt.aug_com, 1)))
         haskey(kkt.etc, :hess_w2) || (kkt.etc[:hess_w2] = CuVector{T}(undef, size(kkt.aug_com, 1)))
 
@@ -236,6 +235,7 @@ function MadNLP.mul!(y::AbstractVector, kkt::MadNLP.DenseCondensedKKTSystem{T, V
         LinearAlgebra.mul!(d_y, kkt.aug_com, d_x)
         copyto!(y, d_y)
     else
+        # Load buffers
         haskey(kkt.etc, :hess_w3) || (kkt.etc[:hess_w3] = CuVector{T}(undef, length(x)))
         haskey(kkt.etc, :hess_w4) || (kkt.etc[:hess_w4] = CuVector{T}(undef, length(y)))
 
@@ -245,7 +245,5 @@ function MadNLP.mul!(y::AbstractVector, kkt::MadNLP.DenseCondensedKKTSystem{T, V
         MadNLP._mul_expanded!(d_y, kkt, d_x)
         copyto!(y, d_y)
     end
-
 end
-
 

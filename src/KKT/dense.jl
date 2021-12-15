@@ -213,14 +213,14 @@ function DenseCondensedKKTSystem{T, VT, MT}(nlp::AbstractNLPModel, info_constrai
     m = get_ncon(nlp)
     ns = length(info_constraints.ind_ineq)
     n_eq = m - ns
-    hess = MT(undef, n, n)
-    jac = MT(undef, m, n)
+
+    aug_com  = MT(undef, n+m-ns, n+m-ns)
+    hess     = MT(undef, n, n)
+    jac      = MT(undef, m, n)
     jac_ineq = MT(undef, ns, n)
-    pr_diag = VT(undef, n+ns)
-    du_diag = VT(undef, m)
 
-    aug_com = MT(undef, n+m-ns, n+m-ns)
-
+    pr_diag  = VT(undef, n+ns)
+    du_diag  = VT(undef, m)
     constraint_scaling = VT(undef, m)
 
     # Init!
@@ -248,7 +248,7 @@ function _build_condensed_kkt_system!(
     pr_diag::AbstractVector, du_diag::AbstractVector, ind_eq::AbstractVector, n, m_eq,
 )
     # Transfer Hessian
-    for i in 1:n, j in 1:i
+    @inbounds for i in 1:n, j in 1:i
         if i == j
             dest[i, i] += pr_diag[i] + hess[i, i]
         else
@@ -257,24 +257,30 @@ function _build_condensed_kkt_system!(
         end
     end
     # Transfer Jacobian / variables
-    for i in 1:m_eq, j in 1:n
+    @inbounds for i in 1:m_eq, j in 1:n
         is = ind_eq[i]
         dest[i + n, j] = jac[is, j]
         dest[j, i + n] = jac[is, j]
     end
     # Transfer dual regularization
-    for i in 1:m_eq
+    @inbounds for i in 1:m_eq
         is = ind_eq[i]
         dest[i + n, i + n] = du_diag[is]
     end
 end
 
 function _build_ineq_jac!(
-    dest::AbstractMatrix, jac::AbstractMatrix, pr_diag::AbstractVector, ind_ineq::AbstractVector, con_scale::AbstractVector, n, m_ineq,
+    dest::AbstractMatrix, jac::AbstractMatrix, pr_diag::AbstractVector,
+    ind_ineq::AbstractVector, ind_fixed::AbstractVector, con_scale::AbstractVector,
+    n, m_ineq,
 )
-    for i in 1:m_ineq, j in 1:n
+    @inbounds for i in 1:m_ineq, j in 1:n
         is = ind_ineq[i]
         dest[i, j] = jac[is, j] * sqrt(pr_diag[n+i]) / con_scale[is]
+    end
+    # need to zero the fixed components
+    for i in ind_fixed
+        dest[:, i] .= 0.0
     end
 end
 
@@ -285,10 +291,12 @@ function build_kkt!(kkt::DenseCondensedKKTSystem{T, VT, MT}) where {T, VT, MT}
 
     fill!(kkt.aug_com, zero(T))
     # Build √Σₛ * J
-    _build_ineq_jac!(kkt.jac_ineq, kkt.jac, kkt.pr_diag, kkt.ind_ineq, kkt.constraint_scaling, n, ns)
+    _build_ineq_jac!(kkt.jac_ineq, kkt.jac, kkt.pr_diag, kkt.ind_ineq, kkt.ind_fixed, kkt.constraint_scaling, n, ns)
 
-    # J' * Σₛ * J
-    mul!(kkt.aug_com, kkt.jac_ineq', kkt.jac_ineq)
+    # Select upper-left block (TODO: check mul! dispatch to BLAS if one-strided)
+    W = view(kkt.aug_com, 1:n, 1:n)
+    # Build J' * Σₛ * J
+    mul!(W, kkt.jac_ineq', kkt.jac_ineq)
 
     _build_condensed_kkt_system!(
         kkt.aug_com, kkt.hess, kkt.jac,
@@ -298,6 +306,7 @@ function build_kkt!(kkt::DenseCondensedKKTSystem{T, VT, MT}) where {T, VT, MT}
     treat_fixed_variable!(kkt)
 end
 
+# TODO: check how to handle inertia with the condensed form
 function is_inertia_correct(kkt::DenseCondensedKKTSystem, num_pos, num_zero, num_neg)
     return (num_zero == 0)
 end
@@ -312,24 +321,30 @@ function _mul_expanded!(y::AbstractVector, kkt::DenseCondensedKKTSystem, x::Abst
     Σₛ = view(kkt.pr_diag, 1+n:n+ns)
     Σd = kkt.du_diag
 
+    # Decompose x
     xx = view(x, 1:n)
     xs = view(x, 1+n:n+ns)
     xy = view(x, 1+n+ns:n+ns+m)
 
+    # Decompose y
     yx = view(y, 1:n)
     ys = view(y, 1+n:n+ns)
     yy = view(y, 1+n+ns:n+ns+m)
 
+    # / x (variable)
     yx .= Σₓ .* xx
     mul!(yx, kkt.hess, xx, 1.0, 1.0)
     mul!(yx, kkt.jac', xy, 1.0, 1.0)
 
+    # / s (slack)
     ys .= Σₛ .* xs
     ys .-= kkt.constraint_scaling[kkt.ind_ineq] .* xy[kkt.ind_ineq]
 
+    # / y (multiplier)
     yy .= Σd .* xy
     mul!(yy, kkt.jac, xx, 1.0, 1.0)
     yy[kkt.ind_ineq] .-= kkt.constraint_scaling[kkt.ind_ineq] .* xs
+    return
 end
 
 function mul!(y::AbstractVector, kkt::DenseCondensedKKTSystem, x::AbstractVector)

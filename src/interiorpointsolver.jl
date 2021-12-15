@@ -284,6 +284,12 @@ function solve_refine_wrapper!(ips::InteriorPointSolver{<:DenseCondensedKKTSyste
     n = num_variables(kkt)
     ns = length(kkt.ind_ineq)
 
+    # instantiate working arrays
+    jt = zeros(ips.n)
+    v = zeros(ips.m)
+    Jx_gpu = VT(undef, ns)
+
+    # warning: move the arrays to the host if instantiated on the GPU
     Σₛ = view(kkt.pr_diag, n+1:ips.n) |> Array
     α = kkt.constraint_scaling[kkt.ind_ineq] |> Array
 
@@ -293,13 +299,10 @@ function solve_refine_wrapper!(ips::InteriorPointSolver{<:DenseCondensedKKTSyste
     by = view(b, ips.n .+ kkt.ind_eq)
     bz = view(b, ips.n .+ kkt.ind_ineq)
 
-    jt = zeros(ips.n)
-    v = zeros(ips.m)
     v[kkt.ind_ineq] .= (Σₛ .* bz .+ α .* bs) ./ α.^2
     jtprod!(jt, kkt, v)
     b_c = [bx + jt[1:n]; by]
     x_c = similar(b_c)
-    Jx_gpu = VT(undef, ns)
 
     cnt.linear_solver_time += @elapsed (result = solve_refine!(x_c, ips.iterator, b_c))
     solve_status = (result == :Solved)
