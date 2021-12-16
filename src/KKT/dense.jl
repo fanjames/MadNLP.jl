@@ -287,14 +287,19 @@ end
 function build_kkt!(kkt::DenseCondensedKKTSystem{T, VT, MT}) where {T, VT, MT}
     n = size(kkt.hess, 1)
     ns = kkt.n_ineq
+    n_eq = length(kkt.ind_eq)
     m = size(kkt.jac, 1)
 
     fill!(kkt.aug_com, zero(T))
     # Build √Σₛ * J
     _build_ineq_jac!(kkt.jac_ineq, kkt.jac, kkt.pr_diag, kkt.ind_ineq, kkt.ind_fixed, kkt.constraint_scaling, n, ns)
 
-    # Select upper-left block (TODO: check mul! dispatch to BLAS if one-strided)
-    W = view(kkt.aug_com, 1:n, 1:n)
+    # Select upper-left block
+    W = if n_eq > 0
+        view(kkt.aug_com, 1:n, 1:n) # TODO: does not work on GPU
+    else
+        kkt.aug_com
+    end
     # Build J' * Σₛ * J
     mul!(W, kkt.jac_ineq', kkt.jac_ineq)
 

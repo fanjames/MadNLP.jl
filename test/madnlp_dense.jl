@@ -102,7 +102,7 @@ end
     end
     @testset "Fixed variables" begin
         n, m = 10, 5
-        _compare_dense_with_sparse(kkt_system, 10, 5, Int[1, 2], Int[])
+        _compare_dense_with_sparse(kkt_system, n, m, Int[1, 2], Int[])
     end
 end
 

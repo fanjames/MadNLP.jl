@@ -31,7 +31,7 @@ end
 MadNLP.is_valid(src::CuArray) = true
 
 # Constraint scaling
-function MadNLP._set_con_scale!(con_scale::AbstractVector, jac::CuMatrix, nlp_scaling_max_gradient)
+function MadNLP.set_con_scale!(con_scale::AbstractVector, jac::CuMatrix, nlp_scaling_max_gradient)
     # Compute reduction on the GPU with built-in CUDA.jl function
     d_con_scale = maximum(abs, jac, dims=2)
     copyto!(con_scale, d_con_scale)
@@ -175,6 +175,7 @@ function MadNLP._build_ineq_jac!(
     dest::CuMatrix, jac::CuMatrix, pr_diag::CuVector,
     ind_ineq::AbstractVector, ind_fixed::AbstractVector, con_scale::CuVector, n, m_ineq,
 )
+    (m_ineq == 0) && return # nothing to do if no ineq. constraints
     ind_ineq_gpu = ind_ineq |> CuArray
     ndrange = (m_ineq, n)
     ev = _build_jacobian_condensed_kernel!(CUDADevice())(
