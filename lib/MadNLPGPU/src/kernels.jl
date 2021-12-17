@@ -162,6 +162,11 @@ end
 #=
     DenseCondensedKKTSystem
 =#
+function get_slack_regularization(kkt::DenseCondensedKKTSystem)
+    n, ns = num_variables(kkt), kkt.n_ineq
+    return view(kkt.pr_diag, n+1:n+ns) |> Array
+end
+get_scaling_inequalities(kkt::DenseCondensedKKTSystem) = kkt.constraint_scaling[kkt.ind_ineq] |> Array
 
 @kernel function _build_jacobian_condensed_kernel!(
     dest, jac, pr_diag, ind_ineq, con_scale, n, m_ineq,
@@ -246,5 +251,18 @@ function MadNLP.mul!(y::AbstractVector, kkt::MadNLP.DenseCondensedKKTSystem{T, V
         MadNLP._mul_expanded!(d_y, kkt, d_x)
         copyto!(y, d_y)
     end
+end
+
+function jprod_ineq!(y::AbstractVector, kkt::DenseCondensedKKTSystem{T, VT, MT}, x::AbstractVector) where {T, VT<:CuVector{T}, MT<:CuMatrix{T}}
+    # Create buffers
+    haskey(kkt.etc, :jac_ineq_w1) || (kkt.etc[:jac_ineq_w1] = CuVector{T}(undef, kkt.n_ineq))
+    haskey(kkt.etc, :jac_ineq_w2) || (kkt.etc[:jac_ineq_w2] = CuVector{T}(undef, size(kkt.jac_ineq, 2)))
+
+    x_d = kkt.etc[:jac_ineq_w1]::VT
+    y_d = kkt.etc[:jac_ineq_w2]::VT
+
+    copyto!(x_d, x)
+    mul!(y_d, kkt.jac_ineq, x_d)
+    copyto!(y, y_d)
 end
 

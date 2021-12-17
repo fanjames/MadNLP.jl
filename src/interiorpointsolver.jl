@@ -274,7 +274,7 @@ function solve_refine_wrapper!(ips::InteriorPointSolver, x,b)
     return solve_status
 end
 
-function solve_refine_wrapper!(ips::InteriorPointSolver{<:DenseCondensedKKTSystem{T, VT, MT}}, x,b) where {T, VT, MT}
+function solve_refine_wrapper!(ips::InteriorPointSolver{<:DenseCondensedKKTSystem}, x, b)
     cnt = ips.cnt
     @trace(ips.logger,"Iterative solution started.")
     fixed_variable_treatment_vec!(b, ips.ind_fixed)
@@ -283,45 +283,47 @@ function solve_refine_wrapper!(ips::InteriorPointSolver{<:DenseCondensedKKTSyste
 
     n = num_variables(kkt)
     ns = length(kkt.ind_ineq)
+    n_eq, n_ineq = kkt.n_eq, kkt.n_ineq
+    n_condensed = n + n_eq
 
-    # instantiate working arrays
-    jt = zeros(ips.n)
-    v = zeros(ips.m)
-    Jx_gpu = VT(undef, ns)
+    # load buffers
+    b_c = view(ips._w1, 1:n_condensed)
+    x_c = view(ips._w2, 1:n_condensed)
+    jv_x = view(ips._w3, 1:n_ineq) # for jprod
+    jv_t = ips._w4x                # for jtprod
+    v_c = ips._w4l
 
-    # warning: move the arrays to the host if instantiated on the GPU
-    Σₛ = view(kkt.pr_diag, n+1:ips.n) |> Array
-    α = kkt.constraint_scaling[kkt.ind_ineq] |> Array
+    Σs = get_slack_regularization(kkt)
+    α = get_scaling_inequalities(kkt)
 
     # Decompose right hand side
     bx = view(b, 1:n)
-    bs = view(b, n+1:ips.n) # ips.n includes slack variables
+    bs = view(b, n+1:n+ns)
     by = view(b, ips.n .+ kkt.ind_eq)
     bz = view(b, ips.n .+ kkt.ind_ineq)
 
-    v[kkt.ind_ineq] .= (Σₛ .* bz .+ α .* bs) ./ α.^2
-    jtprod!(jt, kkt, v)
-    b_c = [bx + jt[1:n]; by]
-    x_c = similar(b_c)
+    # Decompose results
+    xx = view(x, 1:n)
+    xs = view(x, n+1:n+ns)
+    xy = view(x, n + ns .+ kkt.ind_eq)
+    xz = view(x, n + ns .+ kkt.ind_ineq)
+
+    v_c .= 0.0
+    v_c[kkt.ind_ineq] .= (Σs .* bz .+ α .* bs) ./ α.^2
+    jtprod!(jv_t, kkt, v_c)
+    # init right-hand-side
+    b_c[1:n] .= bx .+ jv_t[1:n]
+    b_c[1+n:n+n_eq] .= by
 
     cnt.linear_solver_time += @elapsed (result = solve_refine!(x_c, ips.iterator, b_c))
     solve_status = (result == :Solved)
 
-    # Decompose results
-    xx = view(x, 1:n)
-    xs = view(x, n+1:ips.n) # ips.n includes slack variables
-    xy = view(x, ips.n .+ kkt.ind_eq)
-    xz = view(x, ips.n .+ kkt.ind_ineq)
-
+    # Expand solution
     xx .= x_c[1:n]
     xy .= x_c[1+n:end]
-
-    xx_gpu = xx |> VT
-    mul!(Jx_gpu, kkt.jac_ineq, xx_gpu)
-    Jx = Jx_gpu |> Array
-
-    xz .= sqrt.(Σₛ) ./ α .* Jx .- Σₛ .* bz ./ α.^2 .- bs ./ α
-    xs .= (bs .+ α .* xz) ./ Σₛ
+    jprod_ineq!(jv_x, kkt, xx)
+    xz .= sqrt.(Σs) ./ α .* jv_x .- Σs .* bz ./ α.^2 .- bs ./ α
+    xs .= (bs .+ α .* xz) ./ Σs
 
     fixed_variable_treatment_vec!(x, ips.ind_fixed)
     return solve_status

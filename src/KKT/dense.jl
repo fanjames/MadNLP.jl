@@ -243,6 +243,12 @@ end
 is_reduced(kkt::DenseCondensedKKTSystem) = true
 num_variables(kkt::DenseCondensedKKTSystem) = size(kkt.hess, 1)
 
+function get_slack_regularization(kkt::DenseCondensedKKTSystem)
+    n, ns = num_variables(kkt), kkt.n_ineq
+    return view(kkt.pr_diag, n+1:n+ns)
+end
+get_scaling_inequalities(kkt::DenseCondensedKKTSystem) = kkt.constraint_scaling[kkt.ind_ineq]
+
 function _build_condensed_kkt_system!(
     dest::AbstractMatrix, hess::AbstractMatrix, jac::AbstractMatrix,
     pr_diag::AbstractVector, du_diag::AbstractVector, ind_eq::AbstractVector, n, m_eq,
@@ -359,5 +365,9 @@ function mul!(y::AbstractVector, kkt::DenseCondensedKKTSystem, x::AbstractVector
     else
         _mul_expanded!(y, kkt, x)
     end
+end
+
+function jprod_ineq!(y::AbstractVector, kkt::DenseCondensedKKTSystem, x::AbstractVector)
+    mul!(y, kkt.jac_ineq, x)
 end
 
