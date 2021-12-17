@@ -65,9 +65,10 @@ end
 
 function MadNLP.jtprod!(y::AbstractVector, kkt::MadNLP.AbstractDenseKKTSystem{T, VT, MT}, x::AbstractVector) where {T, VT<:CuVector{T}, MT<:CuMatrix{T}}
     # Load buffers
+    m = size(kkt.jac, 1)
     nx = size(kkt.jac, 2)
     ns = length(kkt.ind_ineq)
-    haskey(kkt.etc, :jac_w1) || (kkt.etc[:jac_w1] = CuVector{T}(undef, size(kkt.jac, 1)))
+    haskey(kkt.etc, :jac_w1) || (kkt.etc[:jac_w1] = CuVector{T}(undef, m))
     haskey(kkt.etc, :jac_w2) || (kkt.etc[:jac_w2] = CuVector{T}(undef, nx))
     haskey(kkt.etc, :jac_w3) || (kkt.etc[:jac_w3] = CuVector{T}(undef, ns))
 
@@ -76,15 +77,15 @@ function MadNLP.jtprod!(y::AbstractVector, kkt::MadNLP.AbstractDenseKKTSystem{T,
     d_ys = kkt.etc[:jac_w3]::VT
 
     # x and y can be host arrays. Copy them on the device to avoid side effect.
-    copyto!(d_x, x)
+    @allowscalar copyto!(d_x, x)
 
     # / x
     LinearAlgebra.mul!(d_yx, kkt.jac', d_x)
-    copyto!(y, 1, d_yx, 1, nx)
+    copyto!(parent(y), 1, d_yx, 1, nx)
 
     # / s
     d_ys .= -d_x[kkt.ind_ineq] .* kkt.constraint_scaling[kkt.ind_ineq]
-    copyto!(y, nx+1, d_ys, 1, ns)
+    copyto!(parent(y), nx+1, d_ys, 1, ns)
     return
 end
 
@@ -162,11 +163,11 @@ end
 #=
     DenseCondensedKKTSystem
 =#
-function MadNLP.get_slack_regularization(kkt::MadNLP.DenseCondensedKKTSystem)
+function MadNLP.get_slack_regularization(kkt::MadNLP.DenseCondensedKKTSystem{T, VT, MT}) where {T, VT<:CuVector{T}, MT<:CuMatrix{T}}
     n, ns = MadNLP.num_variables(kkt), kkt.n_ineq
     return view(kkt.pr_diag, n+1:n+ns) |> Array
 end
-MadNLP.get_scaling_inequalities(kkt::MadNLP.DenseCondensedKKTSystem) = kkt.constraint_scaling[kkt.ind_ineq] |> Array
+MadNLP.get_scaling_inequalities(kkt::MadNLP.DenseCondensedKKTSystem{T, VT, MT}) where {T, VT<:CuVector{T}, MT<:CuMatrix{T}} = kkt.constraint_scaling[kkt.ind_ineq] |> Array
 
 @kernel function _build_jacobian_condensed_kernel!(
     dest, jac, pr_diag, ind_ineq, con_scale, n, m_ineq,
@@ -237,7 +238,9 @@ function MadNLP.mul!(y::AbstractVector, kkt::MadNLP.DenseCondensedKKTSystem{T, V
 
         d_x = kkt.etc[:hess_w1]::VT
         d_y = kkt.etc[:hess_w2]::VT
-        copyto!(d_x, x)
+
+        # Call parent() as CUDA does not dispatch on proper copyto! when passed a view
+        copyto!(d_x, 1, parent(x), 1, length(x))
         LinearAlgebra.mul!(d_y, kkt.aug_com, d_x)
         copyto!(y, d_y)
     else
@@ -247,7 +250,9 @@ function MadNLP.mul!(y::AbstractVector, kkt::MadNLP.DenseCondensedKKTSystem{T, V
 
         d_x = kkt.etc[:hess_w3]::VT
         d_y = kkt.etc[:hess_w4]::VT
-        copyto!(d_x, x)
+
+        # Call parent() as CUDA does not dispatch on proper copyto! when passed a view
+        copyto!(d_x, 1, parent(x), 1, length(x))
         MadNLP._mul_expanded!(d_y, kkt, d_x)
         copyto!(y, d_y)
     end
@@ -261,8 +266,9 @@ function MadNLP.jprod_ineq!(y::AbstractVector, kkt::MadNLP.DenseCondensedKKTSyst
     y_d = kkt.etc[:jac_ineq_w1]::VT
     x_d = kkt.etc[:jac_ineq_w2]::VT
 
-    copyto!(x_d, x)
+    # Call parent() as CUDA does not dispatch on proper copyto! when passed a view
+    copyto!(x_d, 1, parent(x), 1, length(x))
     LinearAlgebra.mul!(y_d, kkt.jac_ineq, x_d)
-    copyto!(y, y_d)
+    copyto!(parent(y), 1, y_d, 1, length(y))
 end
 
